@@ -252,6 +252,8 @@ impl AtomicFile {
 impl Drop for AtomicFile {
     fn drop(&mut self) {
         if !self.committed {
+            // Close the file first: Windows cannot delete an open file.
+            drop(self.file.take());
             let _ = fs::remove_file(&self.tmp);
         }
     }
@@ -316,9 +318,10 @@ fn gen(args: &GenArgs) -> Result<()> {
     };
     out.commit()?;
     eprintln!(
-        "generated {} x {} matrix, {nnz} non-zeros ({:.2} per row) -> {}",
+        "generated {} x {} matrix, {} ({:.2} per row) -> {}",
         args.rows,
         args.cols,
+        plural(nnz, "non-zero"),
         nnz as f64 / args.rows.max(1) as f64,
         args.output.display()
     );
@@ -334,10 +337,10 @@ fn pack(args: &PackArgs) -> Result<()> {
     out.commit()?;
     let shape = index.shape();
     eprintln!(
-        "packed {} x {} matrix, {} non-zeros, {} -> {}",
+        "packed {} x {} matrix, {}, {} -> {}",
         shape.rows,
         shape.cols,
-        index.nnz(),
+        plural(index.nnz(), "non-zero"),
         blocks(index.blocks().len()),
         args.output.display()
     );
@@ -373,11 +376,12 @@ fn slice(args: &SliceArgs) -> Result<()> {
     let index = reader.index();
     let total_bytes: u64 = index.blocks().iter().map(|b| u64::from(b.len)).sum();
     eprintln!(
-        "rows {}..{}, cols {}..{}: {found} non-zeros; read {} of {} ({} of {} block bytes)",
+        "rows {}..{}, cols {}..{}: {}; read {} of {} ({} of {} block bytes)",
         args.rows.start,
         args.rows.end.min(index.shape().rows),
         cols.start,
         cols.end.min(index.shape().cols),
+        plural(found, "non-zero"),
         reader.blocks_read(),
         blocks(index.blocks().len()),
         reader.bytes_read(),
@@ -526,13 +530,18 @@ fn verify(args: &FileArg) -> Result<()> {
     Ok(())
 }
 
+/// "1 non-zero", "2 non-zeros".
+fn plural(n: u64, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+
 /// "1 block", "2 blocks".
 fn blocks(n: usize) -> String {
-    if n == 1 {
-        "1 block".to_string()
-    } else {
-        format!("{n} blocks")
-    }
+    plural(n as u64, "block")
 }
 
 fn open_spk(path: &Path) -> Result<Reader<File>> {

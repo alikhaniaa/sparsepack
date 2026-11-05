@@ -411,12 +411,7 @@ fn huge_column_count_gives_an_error_and_no_partial_files() {
     let dir = TempDir::new("hugecols");
     let tsv = dir.join("m.tsv");
     let spk = dir.join("m.spk");
-    fs::write(
-        &tsv,
-        "# shape 0 1073741824
-",
-    )
-    .unwrap();
+    fs::write(&tsv, "# shape 0 1073741824\n").unwrap();
     ok(&["pack", s(&tsv), "-o", s(&spk)]);
     assert_eq!(fs::metadata(&spk).unwrap().len(), 72);
     ok(&["verify", s(&spk)]);
@@ -442,5 +437,22 @@ fn huge_column_count_gives_an_error_and_no_partial_files() {
         left,
         ["m.spk", "m.tsv"],
         "no output or .partial files are left"
+    );
+}
+
+#[test]
+fn messages_use_singular_for_one() {
+    let dir = TempDir::new("singular");
+    let tsv = dir.join("m.tsv");
+    let spk = dir.join("m.spk");
+    fs::write(&tsv, "# shape 2 2\n1\t1\t3\n").unwrap();
+    let out = sparsepack(&["pack", s(&tsv), "-o", s(&spk)]);
+    let report = String::from_utf8(out.stderr).unwrap();
+    assert!(report.contains("1 non-zero, 1 block"), "{report}");
+    let out = sparsepack(&["slice", s(&spk), "--rows", "1:2"]);
+    let report = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        report.contains(": 1 non-zero; read 1 of 1 block "),
+        "{report}"
     );
 }

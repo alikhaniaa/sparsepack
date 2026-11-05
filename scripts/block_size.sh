@@ -44,7 +44,7 @@ for b in 128 1024 8192; do
     for range in 50000:51000 50000:50001; do
         report="$("$bin" slice "$spk" --rows "$range" 2>&1 > /dev/null)"
         # "...: N non-zeros; read K of M blocks (X of Y block bytes)"
-        entries="$(sed -E 's/.*: ([0-9]+) non-zeros.*/\1/' <<< "$report")"
+        entries="$(sed -E 's/.*: ([0-9]+) non-zeros?;.*/\1/' <<< "$report")"
         read_blocks="$(sed -E 's/.*read ([0-9]+) of.*/\1/' <<< "$report")"
         read_bytes="$(sed -E 's/.*blocks \(([0-9]+) of.*/\1/' <<< "$report")"
         echo -e "${b}\t${blocks}\t$(stat -c %s "$spk")\t${overhead}\t${range}\t${read_blocks}\t${read_bytes}\t${entries}" >> "$out"
