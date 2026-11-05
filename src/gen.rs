@@ -80,7 +80,8 @@ where
         .filter(|&c| c <= max_cols)
         .ok_or_else(|| {
             Error::InvalidInput(format!(
-                "the generator keeps three tables with one entry per column;                  {} columns is above the limit of {max_cols}",
+                "the generator keeps three tables with one entry per column; \
+                 {} columns is above the limit of {max_cols}",
                 params.cols
             ))
         })?;
