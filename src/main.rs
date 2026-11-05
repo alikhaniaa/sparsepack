@@ -454,8 +454,8 @@ fn info(args: &FileArg) -> Result<()> {
     let overhead =
         HEADER_LEN + FOOTER_FIXED_LEN + ENTRY_LEN * blocks + FOOTER_CRC_LEN + TRAILER_LEN;
     let tsv_bytes = ops::tsv_size(&args.input, index)?;
-    let cells = shape.rows as f64 * shape.cols as f64;
-    let density = if cells > 0.0 { nnz as f64 / cells } else { 0.0 };
+    let positions = shape.rows as f64 * shape.cols as f64;
+    let density = if positions > 0.0 { nnz as f64 / positions } else { 0.0 };
     let per_nnz = |bytes: u64| {
         if nnz > 0 {
             format!("{:.3}", bytes as f64 / nnz as f64)
