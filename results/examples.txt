@@ -1,0 +1,106 @@
+$ sparsepack gen --rows 5000 --cols 2000 --mean-nnz 40 --zipf 1.0 --seed 7 -o m.tsv
+generated 5000 x 2000 matrix, 201136 non-zeros (40.23 per row) -> m.tsv
+
+$ head -n 4 m.tsv
+# shape 5000 2000
+0	527	1
+0	659	2
+0	697	1
+
+$ sparsepack pack m.tsv -o m.spk
+packed 5000 x 2000 matrix, 201136 non-zeros, 5 blocks -> m.spk
+
+$ sparsepack info m.spk
+shape              5000 x 2000
+nnz                201136
+density            0.020114
+block_rows         1024
+blocks             5
+file_bytes         421167
+overhead_bytes     252 (header, footer, trailer)
+bytes_per_nnz      2.094
+tsv_bytes          2252194 (what unpack writes)
+u32_triplet_bytes  2413632 (12 bytes per non-zero)
+csr_bytes          1649096 (u32 columns and values, u64 row offsets)
+spk_vs_tsv         18.70%
+
+$ sparsepack verify m.spk
+ok: header, footer and 5 blocks verified
+
+$ sparsepack slice m.spk --rows 2500:2502 --cols 0:400
+2500	28	1
+2500	68	2
+2500	82	5
+2500	112	2
+2500	117	1
+2500	136	1
+2500	232	2
+2500	250	3
+2500	278	3
+2500	288	3
+2500	327	3
+2500	328	5
+2500	344	4
+2501	50	1
+2501	328	2
+2501	333	1
+rows 2500..2502, cols 0..400: 16 non-zeros; read 1 of 5 blocks (90021 of 420915 block bytes)
+
+$ sparsepack unpack m.spk | cmp - m.tsv && echo identical
+identical
+
+$ sparsepack colsums m.spk | sort -k2,2nr | head -n 3
+805	9047
+1757	8786
+1501	8681
+
+$ sparsepack rowsums m.spk | head -n 3
+0	9
+1	49
+2	27
+
+$ sparsepack filter m.spk --min-row-sum 60 --min-col-nnz 20 -o small.spk
+kept 3106 of 5000 rows, 1274 of 2000 columns, 163754 of 201136 non-zeros -> small.spk (map: small.map.tsv)
+
+$ head -n 3 small.map.tsv
+# kind	new	old
+col	0	1
+col	1	2
+
+$ grep -c '^row' small.map.tsv
+3106
+
+$ cat tiny.mtx
+%%MatrixMarket matrix coordinate integer general
+3 4 2
+1 2 5
+3 4 1
+
+$ sparsepack pack tiny.mtx -o tiny.spk
+packed 3 x 4 matrix, 2 non-zeros, 1 block -> tiny.spk
+
+$ sparsepack unpack tiny.spk
+# shape 3 4
+0	1	5
+2	3	1
+
+$ cat unsorted.tsv
+0	5	1
+0	3	1
+
+$ sparsepack pack unsorted.tsv -o unsorted.spk || echo "exit status $?"
+sparsepack: cannot pack unsorted.tsv: invalid input: line 2: column 3 comes after column 5 in row 0: columns must be strictly increasing within a row
+exit status 1
+
+# flip one bit of byte 5000 of m.spk (inside a block)
+$ sparsepack verify m.spk || echo "exit status $?"
+m.spk: checksum mismatch in block 0: stored 7b4ae2ff, computed 563a6aff
+sparsepack: 1 of 5 blocks damaged
+exit status 1
+
+$ head -c 60000 m.spk > cut.spk
+
+$ sparsepack info cut.spk || echo "exit status $?"
+sparsepack: cannot read cut.spk: truncated file: end marker missing (the file was cut off or is not a sparsepack file)
+exit status 1
+

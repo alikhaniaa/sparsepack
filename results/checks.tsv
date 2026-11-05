@@ -1,0 +1,16 @@
+matrix	check	result
+small	unpack output identical to generated TSV	yes
+small	colsums 1 thread = 8 threads	yes
+small	colsums = py_colsums.py	yes
+small	info tsv_bytes = TSV file size	yes
+small	verify	ok: header, footer and 10 blocks verified
+medium	unpack output identical to generated TSV	yes
+medium	colsums 1 thread = 8 threads	yes
+medium	colsums = py_colsums.py	yes
+medium	info tsv_bytes = TSV file size	yes
+medium	verify	ok: header, footer and 98 blocks verified
+large	unpack output identical to generated TSV	yes
+large	colsums 1 thread = 8 threads	yes
+large	colsums = py_colsums.py	yes
+large	info tsv_bytes = TSV file size	yes
+large	verify	ok: header, footer and 293 blocks verified

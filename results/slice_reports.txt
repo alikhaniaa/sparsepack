@@ -1,0 +1,6 @@
+# small: slice --rows 5000:5100
+rows 5000..5100, cols 0..5000: 10169 non-zeros; read 1 of 10 blocks (213849 of 2100664 block bytes)
+# medium: slice --rows 50000:51000
+rows 50000..51000, cols 0..30000: 298425 non-zeros; read 2 of 98 blocks (1373567 of 66782291 block bytes)
+# large: slice --rows 150000:153000
+rows 150000..153000, cols 0..50000: 897893 non-zeros; read 4 of 293 blocks (2908335 of 214499679 block bytes)

@@ -1,0 +1,146 @@
+$ cargo fmt --all -- --check
+ok
+
+$ cargo clippy --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+
+$ cargo test --release
+   Compiling sparsepack v0.1.0 (/home/researcher/sparsepack)
+    Finished `release` profile [optimized] target(s) in 7.89s
+     Running unittests src/lib.rs (target/release/deps/sparsepack-e1894c25d0e0528a)
+
+running 34 tests
+test block::tests::accessors ... ok
+test block::tests::decode_rejects_bad_input ... ok
+test block::tests::known_encoding ... ok
+test crc32::tests::known_check_value ... ok
+test block::tests::decode_inverts_encode ... ok
+test crc32::tests::known_values ... ok
+test crc32::tests::table_matches_bitwise_reference ... ok
+test gen::tests::dense_rows_are_capped_at_the_column_count ... ok
+test gen::tests::rejects_bad_parameters ... ok
+test crc32::tests::detects_every_single_bit_flip ... ok
+test gen::tests::zero_columns_give_empty_rows ... ok
+test rng::tests::below_stays_in_range ... ok
+test gen::tests::entries_are_sorted_distinct_and_in_range ... ok
+test rng::tests::matches_reference_sequence_for_seed_zero ... ok
+test text::tests::error_names_the_line ... ok
+test text::tests::parses_matrix_market ... ok
+test text::tests::parses_tsv_entries_comments_and_shape ... ok
+test rng::tests::next_f64_is_in_unit_interval ... ok
+test text::tests::push_u64_writes_decimal ... ok
+test text::tests::rejects_bad_matrix_market ... ok
+test gen::tests::same_seed_same_matrix ... ok
+test varint::tests::decoder_reads_a_sequence ... ok
+test varint::tests::ignores_bytes_after_the_varint ... ok
+test text::tests::rejects_bad_tsv_lines ... ok
+test varint::tests::known_encodings ... ok
+test varint::tests::length_grows_every_seven_bits ... ok
+test varint::tests::rejects_cut_off_input ... ok
+test varint::tests::rejects_overlong_encodings ... ok
+test varint::tests::rejects_values_above_64_bits ... ok
+test varint::tests::round_trips_edge_values ... ok
+test gen::tests::values_are_geometric_and_capped ... ok
+test gen::tests::zipf_makes_some_columns_popular ... ok
+test varint::tests::round_trips_random_values ... ok
+test gen::tests::mean_nnz_per_row_is_close_to_requested ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/release/deps/sparsepack-88eae65e0667c52b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/release/deps/cli-290c90a545162a66)
+
+running 13 tests
+packed 2 x 3 matrix, 2 non-zeros, 1 block -> /tmp/sparsepack-2368760-stdin/m.spk
+test pack_reads_standard_input ... ok
+test pack_reads_matrix_market_by_extension ... ok
+test filter_writes_matrix_and_map ... ok
+test damaged_file_fails_cleanly ... ok
+test shape_is_inferred_without_a_shape_line ... ok
+test colsums_and_rowsums ... ok
+test bad_input_fails_with_a_clear_message_and_no_output ... ok
+test verify_finds_damaged_blocks ... ok
+test info_reports_sizes ... ok
+test gen_is_deterministic ... ok
+test slice_matches_full_unpack ... ok
+test thread_count_does_not_change_the_file ... ok
+test pack_then_unpack_gives_the_same_text ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/corruption.rs (target/release/deps/corruption-32b848bb68ed3256)
+
+running 6 tests
+test errors_name_the_problem ... ok
+test inconsistent_index_with_valid_checksum_is_rejected ... ok
+test appended_bytes_are_detected ... ok
+test every_truncation_is_detected ... ok
+test every_flipped_byte_is_detected ... ok
+test random_damage_with_fixed_checksums_never_panics ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/filter.rs (target/release/deps/filter-90b9b20123c6fa2d)
+
+running 3 tests
+test thresholds_use_the_input_matrix ... ok
+test zero_thresholds_keep_everything ... ok
+test matches_naive_filter_on_random_matrices ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests/matrix_market.rs (target/release/deps/matrix_market-820bcbd734d52c7f)
+
+running 2 tests
+test unsorted_matrix_market_is_rejected ... ok
+test matrix_market_and_tsv_give_identical_files ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests/random_access.rs (target/release/deps/random_access-d9efaa1477f68771)
+
+running 4 tests
+test ranges_outside_the_matrix_read_nothing ... ok
+test one_row_reads_one_block ... ok
+test opening_reads_only_header_trailer_and_footer ... ok
+test random_ranges_match_full_read ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
+     Running tests/roundtrip.rs (target/release/deps/roundtrip-85d44872ac2c2890)
+
+running 11 tests
+test inferred_shape_is_smallest_that_fits ... ok
+test largest_column_indices ... ok
+test empty_rows_at_start_middle_and_end ... ok
+test writer_rejects_bad_entries ... ok
+test writer_rejects_entries_outside_the_shape ... ok
+test zero_rows_per_block_is_rejected ... ok
+test same_input_gives_same_bytes ... ok
+test row_count_around_multiples_of_block_size ... ok
+test single_row_and_single_column ... ok
+test empty_matrices ... ok
+test many_random_matrices ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+
+     Running tests/sums.rs (target/release/deps/sums-9c17ac028c5bad54)
+
+running 3 tests
+test huge_column_counts_are_refused ... ok
+test column_counts_match_plain_loops ... ok
+test sums_match_plain_loops ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s
+
+   Doc-tests sparsepack
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
