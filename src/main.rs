@@ -11,8 +11,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use sparsepack::text::InputFormat;
-use sparsepack::{ops, Reader, DEFAULT_BLOCK_ROWS};
+use sparsepack::gen::{self, GenParams};
+use sparsepack::text::{self, InputFormat};
+use sparsepack::{ops, Reader, Writer, DEFAULT_BLOCK_ROWS};
 
 #[derive(Parser)]
 #[command(
@@ -31,10 +32,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Generate a seeded synthetic matrix (Zipf-skewed columns) as TSV or .spk.
+    Gen(GenArgs),
     /// Pack TSV triplets or a MatrixMarket file (sorted by row, then column) into a .spk file.
     Pack(PackArgs),
     /// Write a .spk file as TSV triplets.
     Unpack(UnpackArgs),
+}
+
+#[derive(Args)]
+struct GenArgs {
+    /// Number of rows.
+    #[arg(long)]
+    rows: u64,
+    /// Number of columns.
+    #[arg(long)]
+    cols: u64,
+    /// Mean non-zeros per row (each row draws its count from 0..=2*mean).
+    #[arg(long, default_value_t = 100)]
+    mean_nnz: u64,
+    /// Zipf exponent of column popularity (0 = uniform).
+    #[arg(long, default_value_t = 1.0)]
+    zipf: f64,
+    /// Seed of the random number generator.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Largest value; values are geometric (half of them are 1).
+    #[arg(long, default_value_t = 1000)]
+    max_value: u32,
+    /// Output file: `.spk` writes the packed format, anything else TSV.
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Rows per block (for `.spk` output).
+    #[arg(long, default_value_t = DEFAULT_BLOCK_ROWS,
+          value_parser = clap::value_parser!(u32).range(1..))]
+    block_rows: u32,
 }
 
 #[derive(Args)]
@@ -163,6 +195,48 @@ fn open_input(path: &Path) -> Result<Box<dyn io::BufRead>> {
     Ok(Box::new(BufReader::with_capacity(1 << 20, file)))
 }
 
+fn gen(args: &GenArgs) -> Result<()> {
+    let params = GenParams {
+        rows: args.rows,
+        cols: args.cols,
+        mean_nnz: args.mean_nnz,
+        zipf: args.zipf,
+        seed: args.seed,
+        max_value: args.max_value,
+    };
+    let mut out = AtomicFile::create(&args.output)?;
+    let nnz = if args.output.extension().is_some_and(|e| e == "spk") {
+        let mut writer = Writer::new(out.writer(), args.block_rows)?;
+        gen::generate(&params, |r, c, v| writer.push(r, c, v))?;
+        writer.finish(Some(params.shape()))?.nnz()
+    } else {
+        let file = out.writer();
+        file.write_all(text::shape_line(params.shape()).as_bytes())?;
+        let mut buf = Vec::with_capacity(1 << 17);
+        let mut nnz = 0u64;
+        gen::generate(&params, |r, c, v| {
+            text::push_triplet(&mut buf, r, c, v);
+            nnz += 1;
+            if buf.len() >= 1 << 16 {
+                file.write_all(&buf)?;
+                buf.clear();
+            }
+            Ok(())
+        })?;
+        file.write_all(&buf)?;
+        nnz
+    };
+    out.commit()?;
+    eprintln!(
+        "generated {} x {} matrix, {nnz} non-zeros ({:.2} per row) -> {}",
+        args.rows,
+        args.cols,
+        nnz as f64 / args.rows.max(1) as f64,
+        args.output.display()
+    );
+    Ok(())
+}
+
 fn pack(args: &PackArgs) -> Result<()> {
     let input = open_input(&args.input)?;
     let mut out = AtomicFile::create(&args.output)?;
@@ -202,6 +276,7 @@ fn run(cli: Cli) -> Result<()> {
             .context("cannot start the thread pool")?;
     }
     match &cli.command {
+        Command::Gen(args) => gen(args),
         Command::Pack(args) => pack(args),
         Command::Unpack(args) => unpack(args),
     }

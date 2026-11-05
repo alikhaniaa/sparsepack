@@ -187,3 +187,55 @@ fn damaged_file_fails_cleanly() {
     let err = fails(&["unpack", s(&dir.join("missing.spk"))]);
     assert!(err.contains("cannot read"), "{err}");
 }
+
+#[test]
+fn gen_is_deterministic() {
+    let dir = TempDir::new("gen");
+    let args = |out: &Path, seed: &str| -> Vec<String> {
+        [
+            "gen",
+            "--rows",
+            "700",
+            "--cols",
+            "300",
+            "--mean-nnz",
+            "20",
+            "--zipf",
+            "1.1",
+            "--seed",
+            seed,
+            "--block-rows",
+            "64",
+            "-o",
+            s(out),
+        ]
+        .map(String::from)
+        .to_vec()
+    };
+    let run = |a: Vec<String>| ok(&a.iter().map(String::as_str).collect::<Vec<_>>());
+    let (a, b, c) = (dir.join("a.tsv"), dir.join("b.tsv"), dir.join("c.tsv"));
+    run(args(&a, "5"));
+    run(args(&b, "5"));
+    run(args(&c, "6"));
+    let text = fs::read(&a).unwrap();
+    assert_eq!(text, fs::read(&b).unwrap(), "same seed, same bytes");
+    assert_ne!(text, fs::read(&c).unwrap(), "different seed");
+
+    // Generating .spk directly equals generating TSV and packing it,
+    // at any thread count.
+    let direct = dir.join("direct.spk");
+    let packed = dir.join("packed.spk");
+    run(args(&direct, "5"));
+    ok(&[
+        "-t",
+        "3",
+        "pack",
+        s(&a),
+        "-o",
+        s(&packed),
+        "--block-rows",
+        "64",
+    ]);
+    assert_eq!(fs::read(&direct).unwrap(), fs::read(&packed).unwrap());
+    assert_eq!(ok(&["unpack", s(&direct)]).into_bytes(), text);
+}
