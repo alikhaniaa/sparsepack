@@ -10,6 +10,8 @@
 //! order and call [`Writer::finish`]. Reading: [`Index::read_from`] reads the
 //! footer, then [`Index::read_block`] decodes one [`Block`].
 
+#![warn(missing_docs)]
+
 pub mod block;
 pub mod crc32;
 pub mod error;
