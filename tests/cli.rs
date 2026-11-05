@@ -359,3 +359,34 @@ fn slice_matches_full_unpack() {
         fails(&["slice", s(&spk), "--rows", bad]);
     }
 }
+
+#[test]
+fn filter_writes_matrix_and_map() {
+    let dir = TempDir::new("filter");
+    let tsv = dir.join("m.tsv");
+    let spk = dir.join("m.spk");
+    let out = dir.join("small.spk");
+    let text = "# shape 4 3\n0\t0\t5\n0\t2\t1\n1\t2\t1\n2\t0\t2\n2\t1\t9\n";
+    fs::write(&tsv, text).unwrap();
+    ok(&["pack", s(&tsv), "-o", s(&spk)]);
+    ok(&[
+        "filter",
+        s(&spk),
+        "--min-row-sum",
+        "2",
+        "--min-col-nnz",
+        "2",
+        "-o",
+        s(&out),
+    ]);
+    // Columns 0 and 2 have 2 non-zeros; rows 0 (sum 6) and 2 (sum 11) pass.
+    assert_eq!(
+        ok(&["unpack", s(&out)]),
+        "# shape 2 2\n0\t0\t5\n0\t1\t1\n1\t0\t2\n"
+    );
+    let map = fs::read_to_string(dir.join("small.map.tsv")).unwrap();
+    assert_eq!(
+        map,
+        "# kind\tnew\told\ncol\t0\t0\ncol\t1\t2\nrow\t0\t0\nrow\t1\t2\n"
+    );
+}

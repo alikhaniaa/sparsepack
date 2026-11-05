@@ -42,6 +42,8 @@ enum Command {
     Unpack(UnpackArgs),
     /// Print the non-zeros of a row range (and column range), reading only the blocks needed.
     Slice(SliceArgs),
+    /// Drop rows with a small sum and columns with few non-zeros; renumber the rest.
+    Filter(FilterArgs),
     /// Show shape, size and compression of a .spk file.
     Info(FileArg),
     /// Check the checksum of the header, the footer and every block.
@@ -147,6 +149,24 @@ fn parse_range(text: &str) -> std::result::Result<Range<u64>, String> {
         return Err(format!("start {} is after end {}", range.start, range.end));
     }
     Ok(range)
+}
+
+#[derive(Args)]
+struct FilterArgs {
+    /// Input .spk file.
+    input: PathBuf,
+    /// Keep rows whose values sum to at least N in the input.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    min_row_sum: u64,
+    /// Keep columns with at least M non-zeros in the input.
+    #[arg(long, value_name = "M", default_value_t = 0)]
+    min_col_nnz: u64,
+    /// Output .spk file.
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Renumbering table (default: output name with `.map.tsv`).
+    #[arg(long)]
+    map: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -346,6 +366,39 @@ fn slice(args: &SliceArgs) -> Result<()> {
     Ok(())
 }
 
+fn filter(args: &FilterArgs) -> Result<()> {
+    let reader = open_spk(&args.input)?;
+    let index = reader.index();
+    let map_path = args
+        .map
+        .clone()
+        .unwrap_or_else(|| args.output.with_extension("map.tsv"));
+    let options = ops::FilterOptions {
+        min_row_sum: args.min_row_sum,
+        min_col_nnz: args.min_col_nnz,
+        block_rows: index.block_rows(),
+    };
+    let mut out = AtomicFile::create(&args.output)?;
+    let mut map = AtomicFile::create(&map_path)?;
+    let summary = ops::filter(&args.input, index, options, out.writer(), map.writer())
+        .with_context(|| format!("cannot filter {}", args.input.display()))?;
+    out.commit()?;
+    map.commit()?;
+    let (before, after) = (index.shape(), summary.index.shape());
+    eprintln!(
+        "kept {} of {} rows, {} of {} columns, {} of {} non-zeros -> {} (map: {})",
+        after.rows,
+        before.rows,
+        after.cols,
+        before.cols,
+        summary.index.nnz(),
+        index.nnz(),
+        args.output.display(),
+        map_path.display()
+    );
+    Ok(())
+}
+
 fn info(args: &FileArg) -> Result<()> {
     let reader = open_spk(&args.input)?;
     let index = reader.index();
@@ -431,6 +484,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Pack(args) => pack(args),
         Command::Unpack(args) => unpack(args),
         Command::Slice(args) => slice(args),
+        Command::Filter(args) => filter(args),
         Command::Info(args) => info(args),
         Command::Verify(args) => verify(args),
     }

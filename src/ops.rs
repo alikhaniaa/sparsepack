@@ -13,7 +13,7 @@ use rayon::prelude::*;
 
 use crate::block::Block;
 use crate::error::{Error, Result};
-use crate::format::Index;
+use crate::format::{Index, Shape};
 use crate::text::{self, InputFormat, TripletReader};
 use crate::writer::Writer;
 
@@ -21,6 +21,16 @@ use crate::writer::Writer;
 /// worker thread. Larger batches use more memory, smaller ones leave
 /// threads idle at the end of each batch.
 const BATCH_BLOCKS_PER_THREAD: usize = 4;
+
+/// Read block `i` through a worker's own file handle (or report why the
+/// handle could not be opened).
+fn read_with(file: &mut io::Result<File>, index: &Index, i: usize) -> Result<Block> {
+    match file {
+        Ok(file) => index.read_block(file, i),
+        // io::Error is not Clone, so copy its kind and message.
+        Err(err) => Err(Error::Io(io::Error::new(err.kind(), err.to_string()))),
+    }
+}
 
 /// Read and decode blocks `range` of the file at `path` in parallel and
 /// return `f(i, block_or_error)` for each block `i`, in block order.
@@ -35,16 +45,66 @@ where
         // its result to every call of the second closure in that job.
         .map_init(
             || File::open(path),
-            |file, i| {
-                let block = match file {
-                    Ok(file) => index.read_block(file, i),
-                    // io::Error is not Clone, so copy its kind and message.
-                    Err(err) => Err(Error::Io(io::Error::new(err.kind(), err.to_string()))),
-                };
-                f(i, block)
-            },
+            |file, i| f(i, read_with(file, index, i)),
         )
         .collect()
+}
+
+/// Number of columns as a table length, refusing shapes whose per-column
+/// table would not fit in memory.
+fn column_table_len(shape: Shape) -> Result<usize> {
+    const LIMIT: u64 = 1 << 32;
+    if shape.cols > LIMIT {
+        return Err(Error::InvalidInput(format!(
+            "{} columns: per-column tables are limited to {LIMIT} columns",
+            shape.cols
+        )));
+    }
+    Ok(shape.cols as usize)
+}
+
+fn overflow() -> Error {
+    Error::InvalidInput("a total does not fit in 64 bits".to_string())
+}
+
+/// One total per column over the whole matrix, computed in parallel.
+///
+/// Every rayon job folds its blocks into its own table with `add`, so no
+/// locking is needed; the tables are then added up pairwise (`try_reduce`).
+fn column_totals<F>(path: &Path, index: &Index, add: F) -> Result<Vec<u64>>
+where
+    F: Fn(&mut [u64], &Block) -> Result<()> + Sync,
+{
+    let cols = column_table_len(index.shape())?;
+    (0..index.blocks().len())
+        .into_par_iter()
+        .map_init(|| File::open(path), |file, i| read_with(file, index, i))
+        .try_fold(
+            || vec![0u64; cols],
+            |mut table, block| {
+                add(&mut table, &block?)?;
+                Ok(table)
+            },
+        )
+        .try_reduce(
+            || vec![0u64; cols],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b) {
+                    *x = x.checked_add(y).ok_or_else(overflow)?;
+                }
+                Ok(a)
+            },
+        )
+}
+
+/// Number of non-zeros in each column.
+pub fn col_nnz(path: &Path, index: &Index) -> Result<Vec<u64>> {
+    column_totals(path, index, |table, block| {
+        for (_, col, _) in block.entries() {
+            table[col as usize] += 1;
+        }
+        Ok(())
+    })
 }
 
 /// Read blocks `range` of the file at `path` in parallel, apply `f` to each
@@ -139,4 +199,119 @@ pub fn unpack<W: Write>(path: &Path, index: &Index, mut out: W) -> Result<()> {
     }
     out.flush()?;
     Ok(())
+}
+
+/// Thresholds and outputs of [`filter`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilterOptions {
+    /// Keep a row if the sum of its values in the input is at least this.
+    pub min_row_sum: u64,
+    /// Keep a column if it has at least this many non-zeros in the input.
+    pub min_col_nnz: u64,
+    /// Rows per block of the output file.
+    pub block_rows: u32,
+}
+
+/// What [`filter`] kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterSummary {
+    /// Index of the written file (shape: kept rows x kept columns).
+    pub index: Index,
+    /// Non-zeros of the input that were dropped.
+    pub dropped_nnz: u64,
+}
+
+/// Marks a dropped column in the old-to-new column table.
+const DROPPED: u64 = u64::MAX;
+
+/// Drop sparse rows and columns, renumber the rest, and write the result.
+///
+/// Both thresholds are evaluated on the **input** matrix, independently:
+///
+/// - a column is kept if it has at least `min_col_nnz` non-zeros over all
+///   input rows (pass 1, in parallel over blocks);
+/// - a row is kept if the sum of its values over all input columns is at
+///   least `min_row_sum` (pass 2, while rewriting).
+///
+/// Kept rows and columns keep their order and are renumbered `0, 1, 2, ...`.
+/// The filter runs once and is not repeated until nothing changes, so an
+/// output row can sum to less than `min_row_sum` (its values in dropped
+/// columns are gone) and an output column can have fewer than `min_col_nnz`
+/// non-zeros (some were in dropped rows). A kept row may even be empty.
+///
+/// `map` receives the renumbering as TSV: a `# kind new old` header, one
+/// `col NEW OLD` line per kept column, then one `row NEW OLD` line per kept
+/// row. `row 5 17` means: row 5 of the output is row 17 of the input.
+pub fn filter<W: Write, M: Write>(
+    path: &Path,
+    index: &Index,
+    options: FilterOptions,
+    out: W,
+    mut map: M,
+) -> Result<FilterSummary> {
+    // Pass 1: column counts, then the old-to-new column table.
+    let counts = col_nnz(path, index)?;
+    let mut col_map = vec![DROPPED; counts.len()];
+    let mut kept_cols = 0u64;
+    let mut line = Vec::new();
+    line.extend_from_slice(b"# kind\tnew\told\n");
+    for (old, &n) in counts.iter().enumerate() {
+        if n >= options.min_col_nnz {
+            col_map[old] = kept_cols;
+            line.extend_from_slice(b"col\t");
+            text::push_u64(&mut line, kept_cols);
+            line.push(b'\t');
+            text::push_u64(&mut line, old as u64);
+            line.push(b'\n');
+            kept_cols += 1;
+        }
+    }
+    map.write_all(&line)?;
+
+    // Pass 2: decode blocks a batch at a time (in parallel), then decide
+    // row by row and push the kept entries, renumbered, to the writer.
+    let mut writer = Writer::new(out, options.block_rows)?;
+    let mut kept_rows = 0u64;
+    let mut kept_nnz = 0u64;
+    let n = index.blocks().len();
+    let batch = BATCH_BLOCKS_PER_THREAD * rayon::current_num_threads();
+    for start in (0..n).step_by(batch) {
+        let blocks = map_blocks(path, index, start..(start + batch).min(n), Ok)?;
+        for block in &blocks {
+            for (old_row, row) in block.rows() {
+                let sum = row
+                    .vals
+                    .iter()
+                    .try_fold(0u64, |acc, &v| acc.checked_add(u64::from(v)))
+                    .ok_or_else(overflow)?;
+                if sum < options.min_row_sum {
+                    continue;
+                }
+                for (&col, &value) in row.cols.iter().zip(row.vals) {
+                    let new_col = col_map[col as usize];
+                    if new_col != DROPPED {
+                        writer.push(kept_rows, new_col, value)?;
+                        kept_nnz += 1;
+                    }
+                }
+                line.clear();
+                line.extend_from_slice(b"row\t");
+                text::push_u64(&mut line, kept_rows);
+                line.push(b'\t');
+                text::push_u64(&mut line, old_row);
+                line.push(b'\n');
+                map.write_all(&line)?;
+                kept_rows += 1;
+            }
+        }
+    }
+    map.flush()?;
+    let index_out = writer.finish(Some(Shape {
+        rows: kept_rows,
+        cols: kept_cols,
+    }))?;
+    Ok(FilterSummary {
+        index: index_out,
+        dropped_nnz: index.nnz() - kept_nnz,
+    })
 }
