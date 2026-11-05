@@ -47,7 +47,7 @@ impl std::error::Error for VarintError {}
 /// Append the varint encoding of `value` to `out`.
 pub fn encode(mut value: u64, out: &mut Vec<u8>) {
     while value >= 0x80 {
-        // Low 7 bits plus the continuation bit. `as u8` keeps the low 8 bits.
+        // Low 7 bits plus the continuation bit.
         out.push((value as u8) | 0x80);
         value >>= 7;
     }
@@ -81,9 +81,6 @@ pub fn decode(input: &[u8]) -> Result<(u64, usize), VarintError> {
 }
 
 /// Reads consecutive varints from a byte slice.
-///
-/// The decoder borrows the slice (lifetime `'a`) instead of copying it, so it
-/// cannot outlive the buffer it reads from.
 #[derive(Debug, Clone)]
 pub struct Decoder<'a> {
     input: &'a [u8],

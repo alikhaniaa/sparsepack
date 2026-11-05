@@ -16,7 +16,6 @@ const POLY: u32 = 0xEDB8_8320;
 const TABLE: [u32; 256] = make_table();
 
 const fn make_table() -> [u32; 256] {
-    // `for` loops are not allowed in a `const fn`, hence the `while` loops.
     let mut table = [0u32; 256];
     let mut i = 0;
     while i < 256 {

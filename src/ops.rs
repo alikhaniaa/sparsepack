@@ -28,7 +28,6 @@ const BATCH_BLOCKS_PER_THREAD: usize = 4;
 fn read_with(file: &mut io::Result<File>, index: &Index, i: usize) -> Result<Block> {
     match file {
         Ok(file) => index.read_block(file, i),
-        // io::Error is not Clone, so copy its kind and message.
         Err(err) => Err(Error::Io(io::Error::new(err.kind(), err.to_string()))),
     }
 }
@@ -42,8 +41,7 @@ where
 {
     range
         .into_par_iter()
-        // `map_init` runs the first closure once per rayon job and passes
-        // its result to every call of the second closure in that job.
+        // One file handle per rayon job: threads never share a seek position.
         .map_init(
             || File::open(path),
             |file, i| f(i, read_with(file, index, i)),

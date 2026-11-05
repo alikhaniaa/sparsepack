@@ -145,7 +145,8 @@ impl<W: Write> Writer<W> {
 
     /// Compress all queued blocks in parallel, then write them in row order.
     fn flush_pending(&mut self) -> Result<()> {
-        // `par_iter().map().collect()` keeps the input order in the output.
+        // The collected results are in block order, so the file does not
+        // depend on the number of threads.
         let compressed: Vec<(Vec<u8>, u32)> = self
             .pending
             .par_iter()

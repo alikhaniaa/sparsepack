@@ -96,8 +96,7 @@ impl<'a> LeReader<'a> {
         Self { bytes, part }
     }
 
-    /// The next `N` bytes. `N` is a const generic: the compiler makes one
-    /// version of this function for each array size that is used.
+    /// The next `N` bytes.
     fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         match self.bytes.split_first_chunk::<N>() {
             Some((head, rest)) => {

@@ -21,10 +21,7 @@
 use crate::varint::Decoder;
 use crate::varint::{self, VarintError};
 
-/// The non-zeros of one row, borrowed from a [`Block`].
-///
-/// The lifetime `'a` ties the two slices to the block they point into: a
-/// `Row` cannot be used after its block is dropped.
+/// The non-zeros of one row, borrowed from a [`Block`] (no copy is made).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row<'a> {
     /// Column indices, strictly increasing.

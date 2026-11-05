@@ -330,8 +330,7 @@ while it runs) and took about 8 minutes on the machine above.
 ## Reading the code
 
 Start at `src/varint.rs` and go up through `crc32.rs`, `block.rs`,
-`format.rs`, `writer.rs` and `reader.rs`; the full reading order and five
-questions to check your understanding are in
+`format.rs`, `writer.rs` and `reader.rs`; the full reading order is in
 [`docs/READING.md`](docs/READING.md).
 
 ## License
