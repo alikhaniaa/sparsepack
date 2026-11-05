@@ -2,6 +2,9 @@
 name = "sparsepack"
 version = "0.1.0"
 edition = "2021"
+# Oldest toolchain checked: `cargo +1.85 test --locked --release` passes.
+# clap 4.6 needs 1.85; with 1.80 cargo cannot read its manifest.
+rust-version = "1.85"
 description = "Compressed, block-indexed files for sparse integer matrices"
 license = "MIT"
 authors = ["Alireza Alikhani"]

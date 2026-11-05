@@ -17,7 +17,8 @@ own seeded generator (`sparsepack gen`).
 
 ## Build and run
 
-Developed with rustc 1.99.1; older toolchains were not tested.
+Needs Rust 1.85 or newer (the oldest version checked; clap 4.6 needs it).
+Developed with rustc 1.99.1.
 Dependencies: `clap`, `rayon` and `anyhow`; the tests need nothing extra.
 
 ```
