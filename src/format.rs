@@ -12,7 +12,7 @@
 //! the footer that the trailer points to, and after that only the blocks it
 //! needs.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::ops::Range;
 
 use crate::block::Block;
@@ -69,7 +69,8 @@ pub struct BlockEntry {
 impl BlockEntry {
     /// The matrix rows this block holds.
     pub fn rows(&self) -> Range<u64> {
-        self.first_row..self.first_row + u64::from(self.row_count)
+        // Saturating, so that even an unchecked entry cannot overflow.
+        self.first_row..self.first_row.saturating_add(u64::from(self.row_count))
     }
 }
 
@@ -172,11 +173,20 @@ pub(crate) fn trailer_bytes(footer_offset: u64) -> [u8; TRAILER_LEN] {
     out
 }
 
-/// Seek to `offset` and fill `buf` from there.
+/// Seek to `offset` and fill `buf` from there. Running out of data is
+/// reported as a truncated file rather than as a bare I/O error.
 fn read_at<R: Read + Seek>(src: &mut R, offset: u64, buf: &mut [u8]) -> Result<()> {
     src.seek(SeekFrom::Start(offset))?;
-    src.read_exact(buf)?;
-    Ok(())
+    src.read_exact(buf).map_err(|err| {
+        if err.kind() == ErrorKind::UnexpectedEof {
+            Error::Truncated(format!(
+                "{} bytes at offset {offset} are missing",
+                buf.len()
+            ))
+        } else {
+            Error::Io(err)
+        }
+    })
 }
 
 impl Index {
@@ -279,7 +289,63 @@ impl Index {
         let mut footer = vec![0u8; (footer_end - footer_offset) as usize];
         read_at(src, footer_offset, &mut footer)?;
         let index = Self::parse_footer(&footer, block_rows)?;
+        index.validate(footer_offset)?;
         Ok(index)
+    }
+
+    /// Check that the index describes a possible file. The footer checksum
+    /// already passed, so a failure here means the writer was faulty or the
+    /// file was built by hand; either way, nothing below may trust it.
+    ///
+    /// Blocks must cover rows `0..rows` in order, `block_rows` rows each
+    /// (the last one may have fewer), lie back to back from the end of the
+    /// header to the start of the footer, and add up to the total nnz. This
+    /// also bounds every block length by the file size, so reading a block
+    /// never allocates more than the file holds.
+    fn validate(&self, footer_offset: u64) -> Result<()> {
+        let block_rows = u64::from(self.block_rows);
+        let expected_blocks = self.shape.rows.div_ceil(block_rows);
+        if self.blocks.len() as u64 != expected_blocks {
+            return Err(Error::Corrupt(format!(
+                "{} rows in blocks of {block_rows} need {expected_blocks} blocks, the index lists {}",
+                self.shape.rows,
+                self.blocks.len()
+            )));
+        }
+        let mut offset = HEADER_LEN as u64;
+        let mut nnz = 0u64;
+        for (i, b) in self.blocks.iter().enumerate() {
+            let first_row = i as u64 * block_rows;
+            let row_count = block_rows.min(self.shape.rows - first_row);
+            if b.first_row != first_row || u64::from(b.row_count) != row_count {
+                return Err(Error::Corrupt(format!(
+                    "block {i} should hold {row_count} rows from row {first_row}, \
+                     the index says {} rows from row {}",
+                    b.row_count, b.first_row
+                )));
+            }
+            if b.offset != offset {
+                return Err(Error::Corrupt(format!(
+                    "block {i} starts at byte {}, expected {offset}",
+                    b.offset
+                )));
+            }
+            let overflow = || Error::Corrupt(format!("block {i}: sizes overflow"));
+            offset = offset.checked_add(u64::from(b.len)).ok_or_else(overflow)?;
+            nnz = nnz.checked_add(b.nnz).ok_or_else(overflow)?;
+        }
+        if offset != footer_offset {
+            return Err(Error::Corrupt(format!(
+                "blocks end at byte {offset}, but the footer starts at byte {footer_offset}"
+            )));
+        }
+        if nnz != self.nnz {
+            return Err(Error::Corrupt(format!(
+                "blocks hold {nnz} non-zeros, the footer says {}",
+                self.nnz
+            )));
+        }
+        Ok(())
     }
 
     /// Check the footer checksum and decode the footer.
