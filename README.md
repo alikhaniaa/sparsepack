@@ -31,7 +31,7 @@ cargo test
 |------------|--------------|
 | `gen`      | seeded synthetic matrix: `--rows`, `--cols`, `--mean-nnz` per row, `--zipf` exponent of column popularity, `--seed`, `--max-value`; writes TSV, or `.spk` if the output name ends in `.spk`; same seed, same bytes |
 | `pack`     | TSV triplets (`row col value`, 0-based) or MatrixMarket coordinate integer (1-based) to `.spk`; streaming, so the input is never held in memory; entries must be sorted by row, then column |
-| `unpack`   | `.spk` to TSV triplets; `pack` then `unpack` gives back the same bytes |
+| `unpack`   | `.spk` to TSV triplets; for canonical TSV input (see below) `pack` then `unpack` gives back the same bytes |
 | `info`     | shape, nnz, density, blocks, file size, bytes per non-zero, and the size of the same data as TSV, as u32 triplets and as CSR |
 | `slice`    | non-zeros of `--rows A:B` (and optionally `--cols C:D`), reading only the blocks that hold those rows; reports how many blocks and bytes were read |
 | `filter`   | drop rows whose sum is below `--min-row-sum N` and columns with fewer than `--min-col-nnz M` non-zeros, renumber the rest, write a renumbering table |
@@ -39,15 +39,24 @@ cargo test
 | `verify`   | check the header, footer and every block checksum; exit status 1 if anything is damaged |
 
 `-t/--threads N` sets the number of worker threads (default: all logical
-CPUs). Output files are written as `NAME.partial` and renamed when complete,
-so a failed command does not leave a half-written file.
+CPUs). Output files are written as `NAME.partial`, flushed to disk
+(`sync_all`) and then renamed to `NAME`. When a command fails with an error,
+the partial file is deleted. So `NAME` is either absent or complete; only a
+process killed from outside (by a signal, or by the system when memory runs
+out) can leave a `NAME.partial` behind. `filter` writes two files and renames
+the map first, so whenever the filtered matrix exists, its map is complete.
 
 **Text formats.** TSV triplets have one non-zero per line,
 `row<TAB>col<TAB>value`. A first line `# shape ROWS COLS` gives the shape;
 without it the shape is the smallest that holds all entries. Other `#`
 lines are comments. Values must be in 1..=4294967295 (zeros are not stored,
 so an explicit 0 is an error). `unpack` writes the shape line and then one
-line per non-zero.
+line per non-zero. The round trip is byte-exact only for input in this
+canonical form: the `# shape` line first, entries sorted by row and column,
+one `row<TAB>col<TAB>value` per line with single tabs, no other comments, no
+blank lines, no spaces, no leading zeros and `\n` line ends. `gen` and
+`unpack` write this form. Other valid input packs to the same matrix, but
+`unpack` writes it back in canonical form.
 
 **Filter, precisely.** Both thresholds are evaluated on the input matrix,
 independently: a column is kept if it has at least M non-zeros over all
@@ -165,33 +174,37 @@ and values and 8-byte row offsets, computed by `info`, not written to disk.
 
 | operation | small | medium | large |
 |---|---:|---:|---:|
-| pack TSV -> .spk, 1 thread | 0.092 | 2.823 | 8.537 |
-| pack TSV -> .spk, 8 threads | 0.086 | 2.417 | 7.480 |
-| unpack .spk -> TSV file, 1 thread | 0.074 | 2.261 | 11.915 |
-| unpack .spk -> TSV file, 8 threads | 0.047 | 5.596 | 15.439 |
-| unpack .spk -> /dev/null, 1 thread | 0.058 | 1.873 | 5.881 |
-| unpack .spk -> /dev/null, 8 threads | 0.025 | 0.478 | 1.483 |
-| slice of 1% of the rows | 0.006 | 0.031 | 0.070 |
-| colsums, 1 thread | 0.020 | 0.523 | 1.772 |
-| colsums, 8 threads | 0.015 | 0.150 | 0.462 |
-| colsums in pure Python on the TSV (`scripts/py_colsums.py`) | 0.353 | 10.413 | 31.983 |
-| gzip -6 of the TSV (one run) | 0.902 | 21.695 | 61.545 |
+| pack TSV -> .spk file, 1 thread | 0.189 | 3.581 | 11.032 |
+| pack TSV -> .spk file, 8 threads | 0.194 | 3.575 | 11.124 |
+| unpack .spk -> TSV file, 1 thread | 0.259 | 7.051 | 23.988 |
+| unpack .spk -> TSV file, 8 threads | 0.248 | 6.475 | 19.738 |
+| unpack .spk -> /dev/null, 1 thread | 0.057 | 1.781 | 5.674 |
+| unpack .spk -> /dev/null, 8 threads | 0.026 | 0.482 | 1.461 |
+| slice of 1% of the rows | 0.006 | 0.032 | 0.069 |
+| colsums, 1 thread | 0.018 | 0.499 | 1.629 |
+| colsums, 8 threads | 0.013 | 0.122 | 0.359 |
+| colsums in pure Python on the TSV (`scripts/py_colsums.py`) | 0.354 | 10.381 | 32.335 |
+| gzip -6 of the TSV (one run) | 0.887 | 21.967 | 63.824 |
 
 What these numbers say:
 
-- `colsums` on 8 threads is 3.5x (medium) and 3.8x (large) faster than on
-  one thread, which is about what 4 physical cores allow. The single-thread
-  Python loop is 20x slower than one Rust thread on the medium matrix; it
-  is a weak baseline (no numpy, and it parses text while sparsepack reads a
+- `colsums` on 8 threads is 4.1x (medium) and 4.5x (large) faster than on
+  one thread (4 physical cores, 8 logical CPUs). The single-thread Python
+  loop is about 21x slower than one Rust thread on the medium matrix; it is
+  a weak baseline (no numpy, and it parses text while sparsepack reads a
   compressed binary file).
-- `pack` hardly gains from threads (2.82 s to 2.42 s on medium): parsing
-  the text is single-threaded and is most of the work; only block
-  compression runs in parallel.
-- Unpacking to `/dev/null` scales well (1.87 s to 0.48 s on medium), but
-  writing the 0.4-1.3 GB of text to a file is limited by the disk and is
-  very noisy: the medium 8-thread runs took between 1.0 s and 6.3 s, and
-  the median is slower than one thread. These timings measure the write
-  path of this WSL2 machine more than the decoder.
+- `pack` does not gain from threads (3.58 s at both thread counts on
+  medium): parsing the text is single-threaded, and the time includes
+  flushing the output file to disk before it is renamed.
+- Unpacking to `/dev/null` scales well (1.78 s to 0.48 s on medium), but
+  writing the 0.4-1.3 GB of text to a file, including the flush to disk,
+  takes 6.5-24 s and threads help little. These timings measure the disk
+  of this WSL2 machine more than the decoder.
+- The pack and unpack-to-file times are higher than in the previous run of
+  this script (the `results/` of commit `bcbb124`), which was made before
+  output files were synced to disk. A quick side-by-side run of the two
+  binaries confirmed that the flush is the difference; it is the price of
+  not losing a renamed file in a crash.
 - A 1% slice reads 2 of 98 blocks (1.4 MB of 66.8 MB) on medium and 4 of
   293 blocks on large (`results/slice_reports.txt`); the time is mostly
   process start-up.
@@ -199,20 +212,22 @@ What these numbers say:
 **Block size** (medium matrix; `scripts/block_size.sh`,
 `results/block_size.tsv`, `results/block_size_times.tsv`):
 
-| rows per block | blocks | file size | index overhead | 1,000-row slice: blocks / bytes read / time | 1-row slice: bytes read / time | colsums, 8 threads |
+| rows per block | blocks | file size | fixed overhead, 72 + 36 x blocks | 1,000-row slice: blocks / bytes read / time | 1-row slice: bytes read / time | colsums, 8 threads |
 |---:|---:|---:|---:|---|---|---:|
-| 128  | 782 | 66,810,515 B | 28,224 B | 9 / 771,735 B / 0.025 s   | 88,168 B / 0.003 s    | 0.169 s |
-| 1024 | 98  | 66,785,891 B | 3,600 B  | 2 / 1,373,567 B / 0.031 s | 693,678 B / 0.010 s   | 0.145 s |
-| 8192 | 13  | 66,782,831 B | 540 B    | 1 / 5,495,923 B / 0.082 s | 5,495,923 B / 0.073 s | 0.249 s |
+| 128  | 782 | 66,810,515 B | 28,224 B | 9 / 771,735 B / 0.022 s   | 88,168 B / 0.003 s    | 0.108 s |
+| 1024 | 98  | 66,785,891 B | 3,600 B  | 2 / 1,373,567 B / 0.029 s | 693,678 B / 0.010 s   | 0.132 s |
+| 8192 | 13  | 66,782,831 B | 540 B    | 1 / 5,495,923 B / 0.074 s | 5,495,923 B / 0.065 s | 0.230 s |
 
+The fixed overhead is the 20-byte header, the 36-byte fixed part of the
+footer with its checksum, the 16-byte trailer and 36 bytes per block entry.
 Block size barely changes the file size (0.04% between 128 and 8192 rows):
-rows are compressed on their own, so a block only adds its 36-byte index
-entry. It changes the cost of random access a lot: one row costs a whole
-block, 88 KB with 128-row blocks and 5.5 MB with 8192-row blocks. Very
-large blocks also hurt the parallel operations: with 13 blocks on 8 threads
-the work is uneven, and `colsums` needed 254 MB instead of 47 MB (peak
-resident memory): each of the 8 threads holds a decoded block, and a decoded
-8192-row block has about 2.5 million non-zeros, roughly 30 MB in memory.
+rows are compressed on their own, so a block only adds its index entry. It
+changes the cost of random access a lot: one row costs a whole block, 88 KB
+with 128-row blocks and 5.5 MB with 8192-row blocks. Very large blocks also
+hurt `colsums`: 13 blocks split over 8 threads give uneven work, and the
+peak resident memory was 205 MB instead of 39 MB, because each thread holds
+a decoded block, and a decoded 8192-row block has about 2.5 million
+non-zeros (roughly 30 MB in memory).
 
 **Where .spk does badly** (`scripts/edge_cases.sh`, `results/edge_sizes.tsv`):
 
@@ -245,12 +260,13 @@ three benchmark matrices, `unpack` gives back the generated TSV byte for
 byte, `colsums` at 1 and 8 threads and the Python script give identical
 output, `info` predicts the TSV size exactly and `verify` passes. `cargo fmt
 --check` and `cargo clippy --all-targets -- -D warnings` are clean and the
-76 tests pass (`cargo test --release`). The tests include varint edge and
+81 tests pass (`cargo test --release`). The tests include varint edge and
 malformed cases, the CRC-32 check value, round trips of 300 random matrices
 and of edge shapes, every single-byte flip and every truncation of several
-small files, a random-damage test with repaired checksums, slice and filter
-against naive in-memory versions, MatrixMarket against TSV, and the
-command-line tool run in temporary directories.
+small files, a random-damage test with repaired checksums, valid 72-byte
+files that declare 2^30 or more columns, slice and filter against naive
+in-memory versions, MatrixMarket against TSV, and the command-line tool run
+in temporary directories.
 
 ## Design notes
 
@@ -278,10 +294,15 @@ command-line tool run in temporary directories.
   damaged file says which block is bad. The header and the footer have
   their own CRCs. CRC-32 detects accidental damage (every error burst of up
   to 32 bits), not deliberate tampering.
-- **Strict reading.** Every count read from a file is checked against the
-  bytes that are actually there before it is used to allocate memory, and
-  varints must use their shortest encoding. Damaged or cut-off files give
-  an error message, never a panic; the tests check this byte by byte.
+- **Strict reading.** Counts read from a file (block lengths, row and
+  non-zero counts, the footer size) are checked against the bytes that are
+  actually there before they are used to allocate memory, and varints must
+  use their shortest encoding. The one size not tied to the file length is
+  the number of columns: tables with one entry per column are checked
+  against a fixed limit (2^27 entries) and allocated with `try_reserve`, so
+  even a valid 72-byte file that declares 2^30 columns gives an error
+  message, not an abort. Damaged or cut-off files give an error message,
+  never a panic; the tests check this byte by byte.
 - **Same output at any thread count.** Blocks are compressed in parallel,
   collected in order and written by one thread, so `pack -t 1` and
   `pack -t 8` write identical files (tested).
@@ -296,11 +317,11 @@ command-line tool run in temporary directories.
   error otherwise. There is no external sort.
 - Single machine, single file. No appends or in-place updates: changing the
   matrix means writing a new file.
-- `colsums`, `col_nnz` and `filter` keep one 8-byte counter per column for
-  each worker thread (fewer threads when needed), at most 2^27 counters
-  (1 GiB) in total; a matrix with more than 2^27 columns is refused with an
-  error before anything is allocated. `gen` keeps three such tables and
-  accepts at most 44,739,242 columns.
+- `colsums` and `filter` keep one 8-byte counter per column for each
+  worker thread (fewer threads when needed), at most 2^27 counters (1 GiB)
+  in total; a matrix with more than 2^27 columns is refused with an error
+  before anything is allocated. `gen` keeps three such tables and accepts
+  at most 44,739,242 columns.
 - The declared shape is trusted: a `# shape` line with 10^12 rows makes the
   writer emit every empty row (one byte each).
 - `gen` uses floating-point `powf` for its Zipf table, so the output is
@@ -324,9 +345,11 @@ bash scripts/examples.sh     # the example above           -> results/examples.t
 bash scripts/quality.sh      # fmt, clippy, tests          -> results/quality.txt
 ```
 
-The scripts need bash, Python 3 (standard library only) and gzip. Data goes
-to `data/` (not committed); `bench.sh` leaves about 2.3 GB there (more
-while it runs) and took about 8 minutes on the machine above.
+The scripts need Linux (they read `/proc/cpuinfo` and `/proc/meminfo`, use
+GNU `stat -c` and Python's `resource` module), bash, Python 3 (standard
+library only) and gzip. Data goes to `data/` (not committed); `bench.sh`
+leaves about 2.3 GB there (more while it runs) and took about 10 minutes on
+the machine above.
 
 ## Reading the code
 
