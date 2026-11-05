@@ -198,14 +198,16 @@ struct UnpackArgs {
 }
 
 /// An output file that is written under a temporary name (`NAME.partial`)
-/// and renamed to its real name only by [`AtomicFile::commit`]. If the
-/// command fails first, `Drop` deletes the temporary file, so a failed run
-/// never leaves a half-written output behind.
+/// and renamed to its real name only by [`AtomicFile::commit`], after its
+/// data has been flushed to disk. If the command returns an error first,
+/// `Drop` deletes the temporary file. So `NAME` is either absent or complete;
+/// only a process killed from outside can leave a `NAME.partial` behind.
 struct AtomicFile {
     path: PathBuf,
     tmp: PathBuf,
-    /// `None` after `commit` has closed the file.
+    /// `None` once `commit` has closed the file.
     file: Option<BufWriter<File>>,
+    committed: bool,
 }
 
 impl AtomicFile {
@@ -219,6 +221,7 @@ impl AtomicFile {
             path: path.to_path_buf(),
             tmp,
             file: Some(BufWriter::new(file)),
+            committed: false,
         })
     }
 
@@ -227,9 +230,12 @@ impl AtomicFile {
     }
 
     fn commit(mut self) -> Result<()> {
-        if let Some(mut file) = self.file.take() {
-            file.flush()?;
-            // The file is closed here, before the rename (needed on Windows).
+        if let Some(file) = self.file.take() {
+            let file = file.into_inner().map_err(|err| err.into_error())?;
+            // Data on disk before the new name appears, so a crash right
+            // after the rename cannot leave a complete name with lost data.
+            file.sync_all()?;
+            // `file` is closed here, before the rename (needed on Windows).
         }
         fs::rename(&self.tmp, &self.path).with_context(|| {
             format!(
@@ -237,14 +243,15 @@ impl AtomicFile {
                 self.tmp.display(),
                 self.path.display()
             )
-        })
+        })?;
+        self.committed = true;
+        Ok(())
     }
 }
 
 impl Drop for AtomicFile {
     fn drop(&mut self) {
-        // Still open means `commit` was not reached: remove the partial file.
-        if self.file.take().is_some() {
+        if !self.committed {
             let _ = fs::remove_file(&self.tmp);
         }
     }
@@ -395,8 +402,10 @@ fn filter(args: &FilterArgs) -> Result<()> {
     let mut map = AtomicFile::create(&map_path)?;
     let summary = ops::filter(&args.input, index, options, out.writer(), map.writer())
         .with_context(|| format!("cannot filter {}", args.input.display()))?;
-    out.commit()?;
+    // The map goes into place first: whenever the filtered matrix exists
+    // under its name, its renumbering table is complete next to it.
     map.commit()?;
+    out.commit()?;
     let (before, after) = (index.shape(), summary.index.shape());
     eprintln!(
         "kept {} of {} rows, {} of {} columns, {} of {} non-zeros -> {} (map: {})",
