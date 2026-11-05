@@ -239,3 +239,74 @@ fn gen_is_deterministic() {
     assert_eq!(fs::read(&direct).unwrap(), fs::read(&packed).unwrap());
     assert_eq!(ok(&["unpack", s(&direct)]).into_bytes(), text);
 }
+
+/// First word of the value of `key` in the `info` output.
+fn info_value(info: &str, key: &str) -> String {
+    info.lines()
+        .find_map(|line| {
+            let (k, v) = line.split_once(' ')?;
+            (k == key).then(|| v.split_whitespace().next().unwrap_or("").to_string())
+        })
+        .unwrap_or_else(|| panic!("no {key} in {info}"))
+}
+
+#[test]
+fn info_reports_sizes() {
+    let dir = TempDir::new("info");
+    let mut rng = SplitMix64::new(10);
+    let m = random_matrix(&mut rng, 2000, 700, 30, 0.1);
+    let tsv = dir.join("m.tsv");
+    let spk = dir.join("m.spk");
+    fs::write(&tsv, to_tsv(&m)).unwrap();
+    ok(&["pack", s(&tsv), "-o", s(&spk), "--block-rows", "100"]);
+    let info = ok(&["info", s(&spk)]);
+    let nnz = m.entries.len() as u64;
+    assert_eq!(info_value(&info, "shape"), "2000");
+    assert_eq!(info_value(&info, "nnz"), nnz.to_string());
+    assert_eq!(info_value(&info, "blocks"), "20");
+    assert_eq!(info_value(&info, "block_rows"), "100");
+    let file_bytes = fs::metadata(&spk).unwrap().len();
+    assert_eq!(info_value(&info, "file_bytes"), file_bytes.to_string());
+    let tsv_bytes = fs::metadata(&tsv).unwrap().len();
+    assert_eq!(info_value(&info, "tsv_bytes"), tsv_bytes.to_string());
+    assert_eq!(
+        info_value(&info, "u32_triplet_bytes"),
+        (12 * nnz).to_string()
+    );
+    let overhead = 20 + 36 + 36 * 20 + 16;
+    assert_eq!(info_value(&info, "overhead_bytes"), overhead.to_string());
+
+    // An empty matrix has no bytes per non-zero.
+    let empty = dir.join("empty.spk");
+    fs::write(&tsv, "# shape 0 0\n").unwrap();
+    ok(&["pack", s(&tsv), "-o", s(&empty)]);
+    let info = ok(&["info", s(&empty)]);
+    assert_eq!(info_value(&info, "bytes_per_nnz"), "-");
+    assert_eq!(info_value(&info, "tsv_bytes"), "12");
+}
+
+#[test]
+fn verify_finds_damaged_blocks() {
+    let dir = TempDir::new("verify");
+    let mut rng = SplitMix64::new(12);
+    let tsv = dir.join("m.tsv");
+    let spk = dir.join("m.spk");
+    fs::write(&tsv, to_tsv(&random_matrix(&mut rng, 300, 100, 10, 0.0))).unwrap();
+    ok(&["pack", s(&tsv), "-o", s(&spk), "--block-rows", "50"]);
+    assert!(ok(&["verify", s(&spk)]).contains("6 blocks verified"));
+
+    // Block 0 starts right after the 20-byte header.
+    let mut bytes = fs::read(&spk).unwrap();
+    bytes[20] ^= 1;
+    fs::write(&spk, &bytes).unwrap();
+    let err = fails(&["verify", s(&spk)]);
+    assert!(err.contains("block 0"), "{err}");
+    assert!(err.contains("1 of 6 blocks are damaged"), "{err}");
+
+    // Damage the footer checksum: the file cannot even be opened.
+    let footer_crc = bytes.len() - 16 - 1;
+    bytes[footer_crc] ^= 1;
+    fs::write(&spk, &bytes).unwrap();
+    let err = fails(&["verify", s(&spk)]);
+    assert!(err.contains("checksum mismatch in footer"), "{err}");
+}

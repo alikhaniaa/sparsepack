@@ -22,12 +22,12 @@ use crate::writer::Writer;
 /// threads idle at the end of each batch.
 const BATCH_BLOCKS_PER_THREAD: usize = 4;
 
-/// Read blocks `range` of the file at `path` in parallel, apply `f` to each
-/// decoded block and return the results in block order.
-pub fn map_blocks<T, F>(path: &Path, index: &Index, range: Range<usize>, f: F) -> Result<Vec<T>>
+/// Read and decode blocks `range` of the file at `path` in parallel and
+/// return `f(i, block_or_error)` for each block `i`, in block order.
+fn par_blocks<T, F>(path: &Path, index: &Index, range: Range<usize>, f: F) -> Vec<T>
 where
     T: Send,
-    F: Fn(Block) -> Result<T> + Sync,
+    F: Fn(usize, Result<Block>) -> T + Sync,
 {
     range
         .into_par_iter()
@@ -36,13 +36,55 @@ where
         .map_init(
             || File::open(path),
             |file, i| {
-                let file = file
-                    .as_mut()
-                    .map_err(|err| Error::Io(io::Error::new(err.kind(), err.to_string())))?;
-                f(index.read_block(file, i)?)
+                let block = match file {
+                    Ok(file) => index.read_block(file, i),
+                    // io::Error is not Clone, so copy its kind and message.
+                    Err(err) => Err(Error::Io(io::Error::new(err.kind(), err.to_string()))),
+                };
+                f(i, block)
             },
         )
         .collect()
+}
+
+/// Read blocks `range` of the file at `path` in parallel, apply `f` to each
+/// decoded block and return the results in block order, or the first error.
+pub fn map_blocks<T, F>(path: &Path, index: &Index, range: Range<usize>, f: F) -> Result<Vec<T>>
+where
+    T: Send,
+    F: Fn(Block) -> Result<T> + Sync,
+{
+    par_blocks(path, index, range, |_, block| block.and_then(&f))
+        .into_iter()
+        .collect()
+}
+
+/// Check every block: read it, compare its CRC-32 and decode it. Returns
+/// one error per damaged block (empty when the file is intact). The header
+/// and footer were already checked when `index` was read.
+pub fn verify(path: &Path, index: &Index) -> Vec<Error> {
+    par_blocks(path, index, 0..index.blocks().len(), |_, block| block.err())
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Number of decimal digits of `n`.
+fn digits(n: u64) -> u64 {
+    u64::from(n.checked_ilog10().unwrap_or(0)) + 1
+}
+
+/// Size in bytes of the TSV text that [`unpack`] writes for this file,
+/// computed by decoding every block (in parallel) without formatting it.
+pub fn tsv_size(path: &Path, index: &Index) -> Result<u64> {
+    let per_block = map_blocks(path, index, 0..index.blocks().len(), |block| {
+        Ok(block
+            .entries()
+            .map(|(r, c, v)| digits(r) + digits(c) + digits(u64::from(v)) + 3)
+            .sum::<u64>())
+    })?;
+    let header = text::shape_line(index.shape()).len() as u64;
+    Ok(header + per_block.iter().sum::<u64>())
 }
 
 /// Add a line number to input errors from the writer (sort order, zeros).

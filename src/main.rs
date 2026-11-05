@@ -9,8 +9,9 @@ use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use sparsepack::format::{ENTRY_LEN, FOOTER_CRC_LEN, FOOTER_FIXED_LEN, HEADER_LEN, TRAILER_LEN};
 use sparsepack::gen::{self, GenParams};
 use sparsepack::text::{self, InputFormat};
 use sparsepack::{ops, Reader, Writer, DEFAULT_BLOCK_ROWS};
@@ -38,6 +39,10 @@ enum Command {
     Pack(PackArgs),
     /// Write a .spk file as TSV triplets.
     Unpack(UnpackArgs),
+    /// Show shape, size and compression of a .spk file.
+    Info(FileArg),
+    /// Check the checksum of the header, the footer and every block.
+    Verify(FileArg),
 }
 
 #[derive(Args)]
@@ -105,6 +110,12 @@ impl FormatArg {
             FormatArg::Auto => InputFormat::Tsv,
         }
     }
+}
+
+#[derive(Args)]
+struct FileArg {
+    /// Input .spk file.
+    input: PathBuf,
 }
 
 #[derive(Args)]
@@ -264,6 +275,75 @@ fn unpack(args: &UnpackArgs) -> Result<()> {
     })
 }
 
+fn info(args: &FileArg) -> Result<()> {
+    let reader = open_spk(&args.input)?;
+    let index = reader.index();
+    let shape = index.shape();
+    let nnz = index.nnz();
+    let blocks = index.blocks().len();
+    let file_bytes = fs::metadata(&args.input)?.len();
+    let overhead =
+        HEADER_LEN + FOOTER_FIXED_LEN + ENTRY_LEN * blocks + FOOTER_CRC_LEN + TRAILER_LEN;
+    let tsv_bytes = ops::tsv_size(&args.input, index)?;
+    let cells = shape.rows as f64 * shape.cols as f64;
+    let density = if cells > 0.0 { nnz as f64 / cells } else { 0.0 };
+    let per_nnz = |bytes: u64| {
+        if nnz > 0 {
+            format!("{:.3}", bytes as f64 / nnz as f64)
+        } else {
+            "-".to_string()
+        }
+    };
+    let lines = [
+        ("shape", format!("{} x {}", shape.rows, shape.cols)),
+        ("nnz", nnz.to_string()),
+        ("density", format!("{density:.6}")),
+        ("block_rows", index.block_rows().to_string()),
+        ("blocks", blocks.to_string()),
+        ("file_bytes", file_bytes.to_string()),
+        (
+            "overhead_bytes",
+            format!("{overhead} (header, footer, trailer)"),
+        ),
+        ("bytes_per_nnz", per_nnz(file_bytes)),
+        ("tsv_bytes", format!("{tsv_bytes} (what unpack writes)")),
+        (
+            "u32_triplet_bytes",
+            format!("{} (12 bytes per non-zero)", 12 * nnz),
+        ),
+        (
+            "csr_bytes",
+            format!(
+                "{} (u32 columns and values, u64 row offsets)",
+                8 * nnz + 8 * (shape.rows + 1)
+            ),
+        ),
+        (
+            "spk_vs_tsv",
+            format!("{:.2}%", 100.0 * file_bytes as f64 / tsv_bytes as f64),
+        ),
+    ];
+    for (key, value) in lines {
+        println!("{key:<18} {value}");
+    }
+    Ok(())
+}
+
+fn verify(args: &FileArg) -> Result<()> {
+    let reader = open_spk(&args.input)?;
+    let index = reader.index();
+    let errors = ops::verify(&args.input, index);
+    for err in &errors {
+        eprintln!("{}: {err}", args.input.display());
+    }
+    let blocks = index.blocks().len();
+    if !errors.is_empty() {
+        bail!("{} of {blocks} blocks are damaged", errors.len());
+    }
+    println!("ok: header, footer and {blocks} blocks verified");
+    Ok(())
+}
+
 fn open_spk(path: &Path) -> Result<Reader<File>> {
     Reader::open(path).with_context(|| format!("cannot read {}", path.display()))
 }
@@ -279,6 +359,8 @@ fn run(cli: Cli) -> Result<()> {
         Command::Gen(args) => gen(args),
         Command::Pack(args) => pack(args),
         Command::Unpack(args) => unpack(args),
+        Command::Info(args) => info(args),
+        Command::Verify(args) => verify(args),
     }
 }
 
