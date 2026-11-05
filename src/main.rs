@@ -44,6 +44,10 @@ enum Command {
     Slice(SliceArgs),
     /// Drop rows with a small sum and columns with few non-zeros; renumber the rest.
     Filter(FilterArgs),
+    /// Print the sum of each column (`col<TAB>sum`), in parallel over blocks.
+    Colsums(SumsArgs),
+    /// Print the sum of each row (`row<TAB>sum`), in parallel over blocks.
+    Rowsums(SumsArgs),
     /// Show shape, size and compression of a .spk file.
     Info(FileArg),
     /// Check the checksum of the header, the footer and every block.
@@ -167,6 +171,15 @@ struct FilterArgs {
     /// Renumbering table (default: output name with `.map.tsv`).
     #[arg(long)]
     map: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct SumsArgs {
+    /// Input .spk file.
+    input: PathBuf,
+    /// Output file (default: standard output).
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -399,6 +412,38 @@ fn filter(args: &FilterArgs) -> Result<()> {
     Ok(())
 }
 
+/// Which sums `sums` prints.
+#[derive(Clone, Copy)]
+enum Axis {
+    Rows,
+    Cols,
+}
+
+fn sums(args: &SumsArgs, axis: Axis) -> Result<()> {
+    let reader = open_spk(&args.input)?;
+    let index = reader.index();
+    let totals = match axis {
+        Axis::Rows => ops::row_sums(&args.input, index),
+        Axis::Cols => ops::col_sums(&args.input, index),
+    }
+    .with_context(|| format!("cannot read {}", args.input.display()))?;
+    with_output(args.output.as_deref(), |out| {
+        let mut buf = Vec::with_capacity(1 << 17);
+        for (i, &total) in totals.iter().enumerate() {
+            text::push_u64(&mut buf, i as u64);
+            buf.push(b'\t');
+            text::push_u64(&mut buf, total);
+            buf.push(b'\n');
+            if buf.len() >= 1 << 16 {
+                out.write_all(&buf)?;
+                buf.clear();
+            }
+        }
+        out.write_all(&buf)?;
+        Ok(())
+    })
+}
+
 fn info(args: &FileArg) -> Result<()> {
     let reader = open_spk(&args.input)?;
     let index = reader.index();
@@ -485,6 +530,8 @@ fn run(cli: Cli) -> Result<()> {
         Command::Unpack(args) => unpack(args),
         Command::Slice(args) => slice(args),
         Command::Filter(args) => filter(args),
+        Command::Colsums(args) => sums(args, Axis::Cols),
+        Command::Rowsums(args) => sums(args, Axis::Rows),
         Command::Info(args) => info(args),
         Command::Verify(args) => verify(args),
     }

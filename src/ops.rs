@@ -97,6 +97,33 @@ where
         )
 }
 
+/// Sum of the values in each column, computed in parallel over blocks.
+pub fn col_sums(path: &Path, index: &Index) -> Result<Vec<u64>> {
+    column_totals(path, index, |table, block| {
+        for (_, col, value) in block.entries() {
+            let total = &mut table[col as usize];
+            *total = total.checked_add(u64::from(value)).ok_or_else(overflow)?;
+        }
+        Ok(())
+    })
+}
+
+/// Sum of the values in each row, in row order, computed in parallel over
+/// blocks (each block gives the sums of its own rows).
+pub fn row_sums(path: &Path, index: &Index) -> Result<Vec<u64>> {
+    let per_block: Vec<Vec<u64>> = map_blocks(path, index, 0..index.blocks().len(), |block| {
+        block.rows().map(|(_, row)| row_sum(row.vals)).collect()
+    })?;
+    Ok(per_block.concat())
+}
+
+/// Sum of the values of one row.
+fn row_sum(vals: &[u32]) -> Result<u64> {
+    vals.iter()
+        .try_fold(0u64, |acc, &v| acc.checked_add(u64::from(v)))
+        .ok_or_else(overflow)
+}
+
 /// Number of non-zeros in each column.
 pub fn col_nnz(path: &Path, index: &Index) -> Result<Vec<u64>> {
     column_totals(path, index, |table, block| {
@@ -279,12 +306,7 @@ pub fn filter<W: Write, M: Write>(
         let blocks = map_blocks(path, index, start..(start + batch).min(n), Ok)?;
         for block in &blocks {
             for (old_row, row) in block.rows() {
-                let sum = row
-                    .vals
-                    .iter()
-                    .try_fold(0u64, |acc, &v| acc.checked_add(u64::from(v)))
-                    .ok_or_else(overflow)?;
-                if sum < options.min_row_sum {
+                if row_sum(row.vals)? < options.min_row_sum {
                     continue;
                 }
                 for (&col, &value) in row.cols.iter().zip(row.vals) {

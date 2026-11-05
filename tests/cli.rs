@@ -390,3 +390,18 @@ fn filter_writes_matrix_and_map() {
         "# kind\tnew\told\ncol\t0\t0\ncol\t1\t2\nrow\t0\t0\nrow\t1\t2\n"
     );
 }
+
+#[test]
+fn colsums_and_rowsums() {
+    let dir = TempDir::new("sumscli");
+    let tsv = dir.join("m.tsv");
+    let spk = dir.join("m.spk");
+    fs::write(&tsv, "# shape 3 4\n0\t1\t5\n0\t3\t2\n2\t1\t7\n").unwrap();
+    ok(&["pack", s(&tsv), "-o", s(&spk), "--block-rows", "2"]);
+    for threads in ["1", "4"] {
+        let cols = ok(&["-t", threads, "colsums", s(&spk)]);
+        assert_eq!(cols, "0\t0\n1\t12\n2\t0\n3\t2\n");
+        let rows = ok(&["-t", threads, "rowsums", s(&spk)]);
+        assert_eq!(rows, "0\t7\n1\t0\n2\t7\n");
+    }
+}
