@@ -211,6 +211,19 @@ impl Index {
         &self.blocks
     }
 
+    /// Indices of the blocks that hold at least one row of `rows`.
+    ///
+    /// The entries are sorted by row, so two binary searches over the index
+    /// find the first and the last block; no block data is read.
+    pub fn blocks_for_rows(&self, rows: Range<u64>) -> Range<usize> {
+        if rows.is_empty() {
+            return 0..0;
+        }
+        let start = self.blocks.partition_point(|b| b.rows().end <= rows.start);
+        let end = self.blocks.partition_point(|b| b.first_row < rows.end);
+        start..end.max(start)
+    }
+
     /// Footer bytes: shape, nnz, block entries and a CRC-32 over all of them.
     pub(crate) fn footer_bytes(&self) -> Vec<u8> {
         let mut out =
