@@ -327,11 +327,11 @@ fn pack(args: &PackArgs) -> Result<()> {
     out.commit()?;
     let shape = index.shape();
     eprintln!(
-        "packed {} x {} matrix, {} non-zeros, {} blocks -> {}",
+        "packed {} x {} matrix, {} non-zeros, {} -> {}",
         shape.rows,
         shape.cols,
         index.nnz(),
-        index.blocks().len(),
+        blocks(index.blocks().len()),
         args.output.display()
     );
     Ok(())
@@ -366,13 +366,13 @@ fn slice(args: &SliceArgs) -> Result<()> {
     let index = reader.index();
     let total_bytes: u64 = index.blocks().iter().map(|b| u64::from(b.len)).sum();
     eprintln!(
-        "rows {}..{}, cols {}..{}: {found} non-zeros; read {} of {} blocks ({} of {} block bytes)",
+        "rows {}..{}, cols {}..{}: {found} non-zeros; read {} of {} ({} of {} block bytes)",
         args.rows.start,
         args.rows.end.min(index.shape().rows),
         cols.start,
         cols.end.min(index.shape().cols),
         reader.blocks_read(),
-        index.blocks().len(),
+        blocks(index.blocks().len()),
         reader.bytes_read(),
         total_bytes
     );
@@ -505,12 +505,21 @@ fn verify(args: &FileArg) -> Result<()> {
     for err in &errors {
         eprintln!("{}: {err}", args.input.display());
     }
-    let blocks = index.blocks().len();
+    let total = blocks(index.blocks().len());
     if !errors.is_empty() {
-        bail!("{} of {blocks} blocks are damaged", errors.len());
+        bail!("{} of {total} damaged", errors.len());
     }
-    println!("ok: header, footer and {blocks} blocks verified");
+    println!("ok: header, footer and {total} verified");
     Ok(())
+}
+
+/// "1 block", "2 blocks".
+fn blocks(n: usize) -> String {
+    if n == 1 {
+        "1 block".to_string()
+    } else {
+        format!("{n} blocks")
+    }
 }
 
 fn open_spk(path: &Path) -> Result<Reader<File>> {

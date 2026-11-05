@@ -302,7 +302,7 @@ fn verify_finds_damaged_blocks() {
     fs::write(&spk, &bytes).unwrap();
     let err = fails(&["verify", s(&spk)]);
     assert!(err.contains("block 0"), "{err}");
-    assert!(err.contains("1 of 6 blocks are damaged"), "{err}");
+    assert!(err.contains("1 of 6 blocks damaged"), "{err}");
 
     // Damage the footer checksum: the file cannot even be opened.
     let footer_crc = bytes.len() - 16 - 1;
