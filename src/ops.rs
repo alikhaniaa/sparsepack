@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use crate::block::Block;
 use crate::error::{Error, Result};
 use crate::format::Index;
-use crate::text::{self, TripletReader};
+use crate::text::{self, InputFormat, TripletReader};
 use crate::writer::Writer;
 
 /// Blocks handed to the thread pool at once by streaming operations, per
@@ -53,11 +53,16 @@ fn at_line(err: Error, line: u64) -> Error {
     }
 }
 
-/// Pack TSV triplet text from `input` into a sparsepack file written to
+/// Pack text in `format` from `input` into a sparsepack file written to
 /// `out`, with `block_rows` rows per block. The input is streamed: only the
 /// blocks waiting for compression are held in memory.
-pub fn pack<R: BufRead, W: Write>(input: R, out: W, block_rows: u32) -> Result<Index> {
-    let mut reader = TripletReader::new(input);
+pub fn pack<R: BufRead, W: Write>(
+    input: R,
+    format: InputFormat,
+    out: W,
+    block_rows: u32,
+) -> Result<Index> {
+    let mut reader = TripletReader::new(input, format);
     let mut writer = Writer::new(out, block_rows)?;
     while let Some(entry) = reader.next() {
         let (row, col, value) = entry?;

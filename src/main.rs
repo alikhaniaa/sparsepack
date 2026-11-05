@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use sparsepack::text::InputFormat;
 use sparsepack::{ops, Reader, DEFAULT_BLOCK_ROWS};
 
 #[derive(Parser)]
@@ -30,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Pack TSV triplets (row, col, value; sorted by row, then col) into a .spk file.
+    /// Pack TSV triplets or a MatrixMarket file (sorted by row, then column) into a .spk file.
     Pack(PackArgs),
     /// Write a .spk file as TSV triplets.
     Unpack(UnpackArgs),
@@ -47,6 +48,31 @@ struct PackArgs {
     #[arg(long, default_value_t = DEFAULT_BLOCK_ROWS,
           value_parser = clap::value_parser!(u32).range(1..))]
     block_rows: u32,
+    /// Input format; `auto` picks `mtx` for files ending in `.mtx`, else `tsv`.
+    #[arg(long, value_enum, default_value_t = FormatArg::Auto)]
+    format: FormatArg,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum FormatArg {
+    Auto,
+    /// TSV triplets, 0-based indices.
+    Tsv,
+    /// MatrixMarket coordinate integer general, 1-based indices.
+    Mtx,
+}
+
+impl FormatArg {
+    fn resolve(self, path: &Path) -> InputFormat {
+        match self {
+            FormatArg::Tsv => InputFormat::Tsv,
+            FormatArg::Mtx => InputFormat::MatrixMarket,
+            FormatArg::Auto if path.extension().is_some_and(|e| e == "mtx") => {
+                InputFormat::MatrixMarket
+            }
+            FormatArg::Auto => InputFormat::Tsv,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -140,7 +166,8 @@ fn open_input(path: &Path) -> Result<Box<dyn io::BufRead>> {
 fn pack(args: &PackArgs) -> Result<()> {
     let input = open_input(&args.input)?;
     let mut out = AtomicFile::create(&args.output)?;
-    let index = ops::pack(input, out.writer(), args.block_rows)
+    let format = args.format.resolve(&args.input);
+    let index = ops::pack(input, format, out.writer(), args.block_rows)
         .with_context(|| format!("cannot pack {}", args.input.display()))?;
     out.commit()?;
     let shape = index.shape();

@@ -111,6 +111,33 @@ fn pack_reads_standard_input() {
 }
 
 #[test]
+fn pack_reads_matrix_market_by_extension() {
+    let dir = TempDir::new("mtx");
+    let mtx = dir.join("m.mtx");
+    let spk = dir.join("m.spk");
+    fs::write(
+        &mtx,
+        "%%MatrixMarket matrix coordinate integer general
+% made by hand
+3 4 2
+1 2 5
+3 4 1
+",
+    )
+    .unwrap();
+    ok(&["pack", s(&mtx), "-o", s(&spk)]);
+    assert_eq!(
+        ok(&["unpack", s(&spk)]),
+        "# shape 3 4
+0	1	5
+2	3	1
+"
+    );
+    let err = fails(&["pack", s(&mtx), "-o", s(&spk), "--format", "tsv"]);
+    assert!(err.contains("line 1"), "{err}");
+}
+
+#[test]
 fn shape_is_inferred_without_a_shape_line() {
     let dir = TempDir::new("infer");
     let tsv = dir.join("m.tsv");
