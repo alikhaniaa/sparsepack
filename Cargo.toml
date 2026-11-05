@@ -1,0 +1,22 @@
+[package]
+name = "sparsepack"
+version = "0.1.0"
+edition = "2021"
+description = "Compressed, block-indexed files for sparse integer matrices"
+license = "MIT"
+authors = ["Alireza Alikhani"]
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sparsepack"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+# One codegen unit and thin LTO: slightly faster binaries for the benchmarks.
+codegen-units = 1
+lto = "thin"
