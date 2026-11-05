@@ -14,8 +14,10 @@ pub mod block;
 pub mod crc32;
 pub mod error;
 pub mod format;
+pub mod ops;
 pub mod reader;
 pub mod rng;
+pub mod text;
 pub mod varint;
 pub mod writer;
 

@@ -15,6 +15,9 @@ name = "sparsepack"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
 
 [profile.release]
 # One codegen unit and thin LTO: slightly faster binaries for the benchmarks.

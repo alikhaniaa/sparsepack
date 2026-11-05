@@ -104,3 +104,36 @@ pub fn unpack(bytes: &[u8]) -> Result<Matrix> {
         entries,
     })
 }
+
+/// A fresh directory under the system temp directory, deleted on drop.
+pub struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    /// `name` must be unique among the tests of one test binary.
+    pub fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sparsepack-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        TempDir(dir)
+    }
+
+    /// Path of `file` inside the directory.
+    pub fn join(&self, file: &str) -> std::path::PathBuf {
+        self.0.join(file)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Text of a matrix in the TSV form that `unpack` writes.
+pub fn to_tsv(m: &Matrix) -> String {
+    let mut text = format!("# shape {} {}\n", m.shape.rows, m.shape.cols);
+    for (r, c, v) in &m.entries {
+        text.push_str(&format!("{r}\t{c}\t{v}\n"));
+    }
+    text
+}

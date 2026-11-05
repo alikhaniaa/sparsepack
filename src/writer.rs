@@ -6,16 +6,22 @@
 //! written in batches, so memory use depends on the batch size, not on the
 //! size of the matrix. The block index stays in memory (36 bytes per block)
 //! and is written as the footer by [`Writer::finish`].
+//!
+//! Blocks are independent, so a batch is compressed in parallel on the rayon
+//! thread pool. The output does not depend on the number of threads: the
+//! compressed blocks are collected in order and written one after another.
 
 use std::io::Write;
+
+use rayon::prelude::*;
 
 use crate::block::Block;
 use crate::crc32::crc32;
 use crate::error::{Error, Result};
 use crate::format::{self, BlockEntry, Index, Shape, HEADER_LEN};
 
-/// Flush the queue when it holds this many blocks...
-const MAX_PENDING_BLOCKS: usize = 16;
+/// Flush the queue when it holds this many blocks per worker thread...
+const PENDING_BLOCKS_PER_THREAD: usize = 2;
 /// ...or this many non-zeros (about 48 MiB in memory at 12 bytes each).
 const MAX_PENDING_NNZ: usize = 4 << 20;
 
@@ -31,6 +37,7 @@ pub struct Writer<W: Write> {
     /// Full blocks waiting to be compressed and written.
     pending: Vec<Block>,
     pending_nnz: usize,
+    max_pending_blocks: usize,
     /// Index entries of the blocks written so far.
     entries: Vec<BlockEntry>,
     nnz: u64,
@@ -55,6 +62,7 @@ impl<W: Write> Writer<W> {
             current: Block::new(0),
             pending: Vec::new(),
             pending_nnz: 0,
+            max_pending_blocks: PENDING_BLOCKS_PER_THREAD * rayon::current_num_threads(),
             entries: Vec::new(),
             nnz: 0,
             last: None,
@@ -129,16 +137,25 @@ impl<W: Write> Writer<W> {
     fn queue(&mut self, block: Block) -> Result<()> {
         self.pending_nnz += block.nnz();
         self.pending.push(block);
-        if self.pending.len() >= MAX_PENDING_BLOCKS || self.pending_nnz >= MAX_PENDING_NNZ {
+        if self.pending.len() >= self.max_pending_blocks || self.pending_nnz >= MAX_PENDING_NNZ {
             self.flush_pending()?;
         }
         Ok(())
     }
 
-    /// Compress and write all queued blocks, in row order.
+    /// Compress all queued blocks in parallel, then write them in row order.
     fn flush_pending(&mut self) -> Result<()> {
-        for block in self.pending.drain(..) {
-            let bytes = block.encode();
+        // `par_iter().map().collect()` keeps the input order in the output.
+        let compressed: Vec<(Vec<u8>, u32)> = self
+            .pending
+            .par_iter()
+            .map(|block| {
+                let bytes = block.encode();
+                let crc = crc32(&bytes);
+                (bytes, crc)
+            })
+            .collect();
+        for (block, (bytes, crc)) in self.pending.drain(..).zip(compressed) {
             let len = u32::try_from(bytes.len()).map_err(|_| {
                 Error::InvalidInput(format!(
                     "block at row {} is larger than 4 GiB; use fewer rows per block",
@@ -152,7 +169,7 @@ impl<W: Write> Writer<W> {
                 first_row: block.first_row(),
                 row_count: block.row_count() as u32,
                 nnz: block.nnz() as u64,
-                crc: crc32(&bytes),
+                crc,
             });
             self.written += u64::from(len);
         }
