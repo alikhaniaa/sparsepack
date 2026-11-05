@@ -286,7 +286,9 @@ impl Index {
             )));
         }
         // At most the file length, so the allocation is bounded by real data.
-        let mut footer = vec![0u8; (footer_end - footer_offset) as usize];
+        let footer_len = usize::try_from(footer_end - footer_offset)
+            .map_err(|_| Error::Corrupt("footer is too large for this platform".to_string()))?;
+        let mut footer = vec![0u8; footer_len];
         read_at(src, footer_offset, &mut footer)?;
         let index = Self::parse_footer(&footer, block_rows)?;
         index.validate(footer_offset)?;
@@ -376,7 +378,8 @@ impl Index {
                 body.len()
             )));
         }
-        let mut blocks = Vec::with_capacity(count as usize);
+        // `count` matches the footer length checked above, so it fits.
+        let mut blocks = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
         for _ in 0..count {
             let offset = r.u64()?;
             let first_row = r.u64()?;

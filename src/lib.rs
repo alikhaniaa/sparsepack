@@ -20,6 +20,7 @@ pub mod gen;
 pub mod ops;
 pub mod reader;
 pub mod rng;
+pub mod table;
 pub mod text;
 pub mod varint;
 pub mod writer;

@@ -405,3 +405,42 @@ fn colsums_and_rowsums() {
         assert_eq!(rows, "0\t7\n1\t0\n2\t7\n");
     }
 }
+
+#[test]
+fn huge_column_count_gives_an_error_and_no_partial_files() {
+    let dir = TempDir::new("hugecols");
+    let tsv = dir.join("m.tsv");
+    let spk = dir.join("m.spk");
+    fs::write(
+        &tsv,
+        "# shape 0 1073741824
+",
+    )
+    .unwrap();
+    ok(&["pack", s(&tsv), "-o", s(&spk)]);
+    assert_eq!(fs::metadata(&spk).unwrap().len(), 72);
+    ok(&["verify", s(&spk)]);
+    for args in [
+        vec!["colsums", s(&spk)],
+        vec!["filter", s(&spk), "-o", s(&dir.join("f.spk"))],
+    ] {
+        let out = sparsepack(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?} must exit with an error, not abort"
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("above the limit"), "{err}");
+    }
+    let mut left: Vec<String> = fs::read_dir(dir.join(""))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["m.spk", "m.tsv"],
+        "no output or .partial files are left"
+    );
+}

@@ -14,6 +14,7 @@ use rayon::prelude::*;
 use crate::block::Block;
 use crate::error::{Error, Result};
 use crate::format::{Index, Shape};
+use crate::table;
 use crate::text::{self, InputFormat, TripletReader};
 use crate::writer::Writer;
 
@@ -50,51 +51,50 @@ where
         .collect()
 }
 
-/// Number of columns as a table length, refusing shapes whose per-column
-/// table would not fit in memory.
-fn column_table_len(shape: Shape) -> Result<usize> {
-    const LIMIT: u64 = 1 << 32;
-    if shape.cols > LIMIT {
-        return Err(Error::InvalidInput(format!(
-            "{} columns: per-column tables are limited to {LIMIT} columns",
-            shape.cols
-        )));
-    }
-    Ok(shape.cols as usize)
-}
-
 fn overflow() -> Error {
-    Error::InvalidInput("a total does not fit in 64 bits".to_string())
+    Error::Corrupt("a sum does not fit in 64 bits".to_string())
 }
 
 /// One total per column over the whole matrix, computed in parallel.
 ///
-/// Every rayon job folds its blocks into its own table with `add`, so no
-/// locking is needed; the tables are then added up pairwise (`try_reduce`).
+/// The blocks are split into contiguous runs, one per worker thread, and
+/// each run is added into its own table with `add`, so no locking is
+/// needed. The tables are summed at the end. All tables exist at the same
+/// time, so fewer runs are used when one table per thread would pass
+/// [`table::MAX_TABLE_ENTRIES`]; a matrix whose single table would pass it
+/// is refused before anything is allocated.
 fn column_totals<F>(path: &Path, index: &Index, add: F) -> Result<Vec<u64>>
 where
     F: Fn(&mut [u64], &Block) -> Result<()> + Sync,
 {
-    let cols = column_table_len(index.shape())?;
-    (0..index.blocks().len())
+    let cols = table::table_len(index.shape().cols, "a per-column total")?;
+    let n = index.blocks().len();
+    let max_tables = table::MAX_TABLE_ENTRIES / cols.max(1);
+    let wanted = rayon::current_num_threads().min(n).min(max_tables).max(1);
+    let per_table = n.div_ceil(wanted).max(1);
+    let tables = n.div_ceil(per_table).max(1);
+    let partial = (0..tables)
         .into_par_iter()
-        .map_init(|| File::open(path), |file, i| read_with(file, index, i))
-        .try_fold(
-            || vec![0u64; cols],
-            |mut table, block| {
-                add(&mut table, &block?)?;
-                Ok(table)
-            },
-        )
-        .try_reduce(
-            || vec![0u64; cols],
-            |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b) {
-                    *x = x.checked_add(y).ok_or_else(overflow)?;
-                }
-                Ok(a)
-            },
-        )
+        .map(|t| {
+            let mut table = table::filled(cols, 0u64)?;
+            let mut file = File::open(path)?;
+            for i in t * per_table..((t + 1) * per_table).min(n) {
+                add(&mut table, &index.read_block(&mut file, i)?)?;
+            }
+            Ok(table)
+        })
+        .collect::<Result<Vec<Vec<u64>>>>()?;
+    let mut partial = partial.into_iter();
+    let mut total = match partial.next() {
+        Some(table) => table,
+        None => table::filled(cols, 0u64)?,
+    };
+    for table in partial {
+        for (x, y) in total.iter_mut().zip(table) {
+            *x = x.checked_add(y).ok_or_else(overflow)?;
+        }
+    }
+    Ok(total)
 }
 
 /// Sum of the values in each column, computed in parallel over blocks.
@@ -276,15 +276,17 @@ pub fn filter<W: Write, M: Write>(
     out: W,
     mut map: M,
 ) -> Result<FilterSummary> {
-    // Pass 1: column counts, then the old-to-new column table.
-    let counts = col_nnz(path, index)?;
-    let mut col_map = vec![DROPPED; counts.len()];
+    // Pass 1: column counts, turned in place into the old-to-new column
+    // table (one table instead of two).
+    let mut col_map = col_nnz(path, index)?;
     let mut kept_cols = 0u64;
     let mut line = Vec::new();
     line.extend_from_slice(b"# kind\tnew\told\n");
-    for (old, &n) in counts.iter().enumerate() {
-        if n >= options.min_col_nnz {
-            col_map[old] = kept_cols;
+    for (old, slot) in col_map.iter_mut().enumerate() {
+        if *slot < options.min_col_nnz {
+            *slot = DROPPED;
+        } else {
+            *slot = kept_cols;
             line.extend_from_slice(b"col\t");
             text::push_u64(&mut line, kept_cols);
             line.push(b'\t');

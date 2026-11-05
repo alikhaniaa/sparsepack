@@ -295,8 +295,11 @@ command-line tool run in temporary directories.
   error otherwise. There is no external sort.
 - Single machine, single file. No appends or in-place updates: changing the
   matrix means writing a new file.
-- `colsums` and `filter` keep one 8-byte counter per column in memory (per
-  rayon job) and refuse more than 2^32 columns.
+- `colsums`, `col_nnz` and `filter` keep one 8-byte counter per column for
+  each worker thread (fewer threads when needed), at most 2^27 counters
+  (1 GiB) in total; a matrix with more than 2^27 columns is refused with an
+  error before anything is allocated. `gen` keeps three such tables and
+  accepts at most 44,739,242 columns.
 - The declared shape is trusted: a `# shape` line with 10^12 rows makes the
   writer emit every empty row (one byte each).
 - `gen` uses floating-point `powf` for its Zipf table, so the output is

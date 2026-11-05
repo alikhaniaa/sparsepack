@@ -176,5 +176,7 @@ entry (magic, version and block size).
 - Row and column indices are `u64` below `2^64 - 1`.
 - A compressed block must fit in 4 GiB (`len` is a `u32`); a block's row
   count is at most `2^32 - 1`.
-- The tool's per-column operations (`colsums`, `filter`) keep one 8-byte
-  counter per column in memory and refuse more than `2^32` columns.
+- The format allows any number of columns, but the tool's per-column
+  operations (`colsums`, `filter`) keep one 8-byte counter per column in
+  memory and refuse files with more than `2^27` columns. Such a file can
+  still be read, sliced, verified and unpacked.

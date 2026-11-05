@@ -25,14 +25,17 @@
 use crate::error::{Error, Result};
 use crate::format::Shape;
 use crate::rng::SplitMix64;
+use crate::table;
 
 /// Parameters of a generated matrix.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenParams {
     /// Number of rows.
     pub rows: u64,
-    /// Number of columns (at most 2^32 - 1; the generator keeps three
-    /// 8-byte tables per column).
+    /// Number of columns. The generator keeps three 8-byte tables with one
+    /// entry per column, so together they stay within
+    /// [`MAX_TABLE_ENTRIES`](crate::table::MAX_TABLE_ENTRIES) entries: at
+    /// most 44,739,242 columns.
     pub cols: u64,
     /// Mean number of non-zeros per row.
     pub mean_nnz: u64,
@@ -71,25 +74,34 @@ where
             params.zipf
         )));
     }
+    let max_cols = table::MAX_TABLE_ENTRIES / 3;
     let cols = usize::try_from(params.cols)
         .ok()
-        .filter(|&c| c <= u32::MAX as usize)
-        .ok_or_else(|| Error::InvalidInput("at most 2^32 - 1 columns".to_string()))?;
+        .filter(|&c| c <= max_cols)
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "the generator keeps three tables with one entry per column;                  {} columns is above the limit of {max_cols}",
+                params.cols
+            ))
+        })?;
     if cols == 0 {
         return Ok(()); // every row is empty
     }
 
     let mut rng = SplitMix64::new(params.seed);
-    let cdf = zipf_cdf(cols, params.zipf);
+    let cdf = zipf_cdf(cols, params.zipf)?;
     // rank_to_col[k] is the column index of the column with popularity rank k.
-    let mut rank_to_col: Vec<u64> = (0..params.cols).collect();
+    let mut rank_to_col = table::filled(cols, 0u64)?;
+    for (rank, col) in rank_to_col.iter_mut().enumerate() {
+        *col = rank as u64;
+    }
     for i in (1..cols).rev() {
         let j = rng.below(i as u64 + 1) as usize;
         rank_to_col.swap(i, j);
     }
     // used[k] == row + 1 marks rank k as taken in the current row, so the
     // table never needs clearing between rows.
-    let mut used = vec![0u64; cols];
+    let mut used = table::filled(cols, 0u64)?;
     let max_draws = params.mean_nnz.saturating_mul(2).saturating_add(1);
     let mut row_cols: Vec<u64> = Vec::new();
 
@@ -118,12 +130,12 @@ where
 
 /// Cumulative Zipf probabilities: `cdf[k]` = P(rank <= k). The last element
 /// is exactly 1.
-fn zipf_cdf(cols: usize, s: f64) -> Vec<f64> {
-    let mut cdf = Vec::with_capacity(cols);
+fn zipf_cdf(cols: usize, s: f64) -> Result<Vec<f64>> {
+    let mut cdf = table::filled(cols, 0.0)?;
     let mut total = 0.0;
-    for k in 0..cols {
+    for (k, p) in cdf.iter_mut().enumerate() {
         total += ((k + 1) as f64).powf(-s);
-        cdf.push(total);
+        *p = total;
     }
     for p in &mut cdf {
         *p /= total;
@@ -131,7 +143,7 @@ fn zipf_cdf(cols: usize, s: f64) -> Vec<f64> {
     if let Some(last) = cdf.last_mut() {
         *last = 1.0;
     }
-    cdf
+    Ok(cdf)
 }
 
 #[cfg(test)]
@@ -234,6 +246,8 @@ mod tests {
         let p = params(10, 10, 2, f64::NAN, 1);
         assert!(generate(&p, |_, _, _| Ok(())).is_err());
         let p = params(10, 1 << 40, 2, 1.0, 1);
+        assert!(generate(&p, |_, _, _| Ok(())).is_err());
+        let p = params(10, 44_739_243, 2, 1.0, 1);
         assert!(generate(&p, |_, _, _| Ok(())).is_err());
     }
 

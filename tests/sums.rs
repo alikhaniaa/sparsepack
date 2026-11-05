@@ -74,3 +74,39 @@ fn huge_column_counts_are_refused() {
     // Row sums need no column table.
     assert_eq!(ops::row_sums(&path, reader.index()).unwrap(), [0, 1, 0]);
 }
+
+#[test]
+fn tiny_files_with_huge_column_counts_fail_cleanly() {
+    // A valid 72-byte file (no rows, no blocks) can declare any number of
+    // columns. Per-column operations must refuse it with an error instead
+    // of trying to allocate the table.
+    let dir = TempDir::new("hugetiny");
+    let path = dir.join("m.spk");
+    for cols in [(1u64 << 27) + 1, 1 << 30, 1 << 32, u64::MAX] {
+        let bytes = pack(&Matrix::new(0, cols, vec![]), 1024);
+        assert_eq!(bytes.len(), 72);
+        fs::write(&path, &bytes).unwrap();
+        let reader = Reader::open(&path).unwrap();
+        assert!(ops::verify(&path, reader.index()).is_empty());
+        assert!(matches!(
+            ops::col_sums(&path, reader.index()),
+            Err(sparsepack::Error::InvalidInput(_))
+        ));
+        assert!(ops::col_nnz(&path, reader.index()).is_err());
+        let options = ops::FilterOptions {
+            min_row_sum: 0,
+            min_col_nnz: 0,
+            block_rows: 1024,
+        };
+        let (mut out, mut map) = (Vec::new(), Vec::new());
+        assert!(ops::filter(&path, reader.index(), options, &mut out, &mut map).is_err());
+        assert!(ops::row_sums(&path, reader.index()).unwrap().is_empty());
+    }
+    // At the limit itself the table is allocated and the sums are all zero.
+    let bytes = pack(&Matrix::new(0, 1 << 20, vec![]), 1024);
+    fs::write(&path, &bytes).unwrap();
+    let reader = Reader::open(&path).unwrap();
+    let sums = ops::col_sums(&path, reader.index()).unwrap();
+    assert_eq!(sums.len(), 1 << 20);
+    assert!(sums.iter().all(|&s| s == 0));
+}
