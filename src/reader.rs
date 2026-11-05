@@ -56,6 +56,11 @@ impl<R: Read + Seek> Reader<R> {
         Ok(block)
     }
 
+    /// The underlying byte source.
+    pub fn get_ref(&self) -> &R {
+        &self.src
+    }
+
     /// Number of blocks read so far.
     pub fn blocks_read(&self) -> usize {
         self.blocks_read

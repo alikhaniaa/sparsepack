@@ -3,6 +3,7 @@
 mod common;
 
 use std::fs;
+use std::ops::Range;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -309,4 +310,52 @@ fn verify_finds_damaged_blocks() {
     fs::write(&spk, &bytes).unwrap();
     let err = fails(&["verify", s(&spk)]);
     assert!(err.contains("checksum mismatch in footer"), "{err}");
+}
+
+#[test]
+fn slice_matches_full_unpack() {
+    let dir = TempDir::new("slice");
+    let mut rng = SplitMix64::new(14);
+    let tsv = dir.join("m.tsv");
+    let spk = dir.join("m.spk");
+    fs::write(&tsv, to_tsv(&random_matrix(&mut rng, 1000, 300, 20, 0.1))).unwrap();
+    ok(&["pack", s(&tsv), "-o", s(&spk), "--block-rows", "100"]);
+    let full = ok(&["unpack", s(&spk)]);
+    let pick = |rows: Range<u64>, cols: Range<u64>| -> String {
+        full.lines()
+            .skip(1)
+            .filter(|line| {
+                let f: Vec<u64> = line.split('\t').map(|x| x.parse().unwrap()).collect();
+                rows.contains(&f[0]) && cols.contains(&f[1])
+            })
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
+    assert_eq!(
+        ok(&["slice", s(&spk), "--rows", "250:260"]),
+        pick(250..260, 0..300)
+    );
+    assert_eq!(
+        ok(&["slice", s(&spk), "--rows", "90:420", "--cols", "10:50"]),
+        pick(90..420, 10..50)
+    );
+    assert_eq!(
+        ok(&["slice", s(&spk), "--rows", "950:"]),
+        pick(950..1000, 0..300)
+    );
+    assert_eq!(
+        ok(&["slice", s(&spk), "--rows", ":", "--cols", ":5"]),
+        pick(0..1000, 0..5)
+    );
+
+    let out = sparsepack(&["slice", s(&spk), "--rows", "250:260"]);
+    let report = String::from_utf8(out.stderr).unwrap();
+    assert!(report.contains("read 1 of 10 blocks"), "{report}");
+    let out = sparsepack(&["slice", s(&spk), "--rows", "199:201"]);
+    let report = String::from_utf8(out.stderr).unwrap();
+    assert!(report.contains("read 2 of 10 blocks"), "{report}");
+
+    for bad in ["5", "9:3", "a:b", "-1:2"] {
+        fails(&["slice", s(&spk), "--rows", bad]);
+    }
 }

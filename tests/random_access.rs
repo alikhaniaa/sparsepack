@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::ops::Range;
 
 use common::{pack, random_any, random_matrix, Entry, Matrix};
@@ -103,4 +103,51 @@ fn ranges_outside_the_matrix_read_nothing() {
     let (got, blocks) = read_range(&bytes, 0..100, 50..1000);
     assert!(got.is_empty());
     assert_eq!(blocks, 7);
+}
+
+/// A cursor that counts the bytes read through it.
+struct CountingReader {
+    inner: Cursor<Vec<u8>>,
+    bytes: u64,
+}
+
+impl Read for CountingReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for CountingReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+#[test]
+fn opening_reads_only_header_trailer_and_footer() {
+    let mut rng = SplitMix64::new(5);
+    let m = random_matrix(&mut rng, 1000, 400, 20, 0.0);
+    let bytes = pack(&m, 100);
+    let file_len = bytes.len() as u64;
+    let src = CountingReader {
+        inner: Cursor::new(bytes),
+        bytes: 0,
+    };
+    let mut reader = Reader::new(src).unwrap();
+    let blocks: Vec<_> = reader.index().blocks().to_vec();
+    let footer_len = 32 + 36 * blocks.len() as u64 + 4;
+    assert_eq!(reader.get_ref().bytes, 20 + 16 + footer_len);
+    assert!(reader.get_ref().bytes < file_len / 10);
+
+    // One row: exactly one block more.
+    reader
+        .for_each_in(250..251, 0..400, |_, _, _| Ok(()))
+        .unwrap();
+    assert_eq!(
+        reader.get_ref().bytes,
+        20 + 16 + footer_len + u64::from(blocks[2].len)
+    );
+    assert_eq!(reader.bytes_read(), u64::from(blocks[2].len));
 }

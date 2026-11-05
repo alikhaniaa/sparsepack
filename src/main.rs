@@ -6,6 +6,7 @@
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -39,6 +40,8 @@ enum Command {
     Pack(PackArgs),
     /// Write a .spk file as TSV triplets.
     Unpack(UnpackArgs),
+    /// Print the non-zeros of a row range (and column range), reading only the blocks needed.
+    Slice(SliceArgs),
     /// Show shape, size and compression of a .spk file.
     Info(FileArg),
     /// Check the checksum of the header, the footer and every block.
@@ -110,6 +113,40 @@ impl FormatArg {
             FormatArg::Auto => InputFormat::Tsv,
         }
     }
+}
+
+#[derive(Args)]
+struct SliceArgs {
+    /// Input .spk file.
+    input: PathBuf,
+    /// Rows `A:B` (0-based, B excluded); `A:` and `:B` leave one end open.
+    #[arg(long, value_parser = parse_range)]
+    rows: Range<u64>,
+    /// Columns `C:D`, same syntax (default: all columns).
+    #[arg(long, value_parser = parse_range)]
+    cols: Option<Range<u64>>,
+    /// Output file (default: standard output).
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+/// Parse `A:B`, `A:`, `:B` or `:` into a half-open range.
+fn parse_range(text: &str) -> std::result::Result<Range<u64>, String> {
+    let (start, end) = text
+        .split_once(':')
+        .ok_or_else(|| format!("expected START:END, got `{text}`"))?;
+    let number = |s: &str, default: u64| {
+        if s.is_empty() {
+            Ok(default)
+        } else {
+            s.parse::<u64>().map_err(|e| format!("`{s}`: {e}"))
+        }
+    };
+    let range = number(start, 0)?..number(end, u64::MAX)?;
+    if range.start > range.end {
+        return Err(format!("start {} is after end {}", range.start, range.end));
+    }
+    Ok(range)
 }
 
 #[derive(Args)]
@@ -275,6 +312,40 @@ fn unpack(args: &UnpackArgs) -> Result<()> {
     })
 }
 
+fn slice(args: &SliceArgs) -> Result<()> {
+    let mut reader = open_spk(&args.input)?;
+    let cols = args.cols.clone().unwrap_or(0..u64::MAX);
+    let mut found = 0u64;
+    with_output(args.output.as_deref(), |out| {
+        let mut buf = Vec::with_capacity(1 << 17);
+        reader.for_each_in(args.rows.clone(), cols.clone(), |r, c, v| {
+            text::push_triplet(&mut buf, r, c, v);
+            found += 1;
+            if buf.len() >= 1 << 16 {
+                out.write_all(&buf)?;
+                buf.clear();
+            }
+            Ok(())
+        })?;
+        out.write_all(&buf)?;
+        Ok(())
+    })?;
+    let index = reader.index();
+    let total_bytes: u64 = index.blocks().iter().map(|b| u64::from(b.len)).sum();
+    eprintln!(
+        "rows {}..{}, cols {}..{}: {found} non-zeros; read {} of {} blocks ({} of {} block bytes)",
+        args.rows.start,
+        args.rows.end.min(index.shape().rows),
+        cols.start,
+        cols.end.min(index.shape().cols),
+        reader.blocks_read(),
+        index.blocks().len(),
+        reader.bytes_read(),
+        total_bytes
+    );
+    Ok(())
+}
+
 fn info(args: &FileArg) -> Result<()> {
     let reader = open_spk(&args.input)?;
     let index = reader.index();
@@ -359,6 +430,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Gen(args) => gen(args),
         Command::Pack(args) => pack(args),
         Command::Unpack(args) => unpack(args),
+        Command::Slice(args) => slice(args),
         Command::Info(args) => info(args),
         Command::Verify(args) => verify(args),
     }
